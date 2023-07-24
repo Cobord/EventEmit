@@ -4,7 +4,7 @@ use std::sync::mpsc::Sender;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use log::info;
+use log::{info, warn};
 
 pub trait Commuting<Aux> {
     fn do_commute(&self, my_aux: &Aux, other: &Self, others_aux: &Aux) -> bool;
@@ -22,6 +22,19 @@ where
     backlog: Vec<(usize, EventType, EventArgType)>,
     num_emitted_before: usize,
     results_out: Option<Sender<(usize, EventType, EventArgType, EventReturnType)>>,
+}
+
+impl<EventType, EventArgType, EventReturnType> Drop
+    for Emitter<EventType, EventArgType, EventReturnType>
+where
+    EventType: Eq + Hash,
+{
+    fn drop(&mut self) {
+        let num_backlog = self.backlog.len();
+        if num_backlog > 0 {
+            warn!("Dropping {} events. They were waiting on something earlier to finish, so never got to start.", num_backlog);
+        }
+    }
 }
 
 impl<EventType, EventArgType, EventReturnType> Emitter<EventType, EventArgType, EventReturnType>
