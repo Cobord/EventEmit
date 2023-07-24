@@ -41,6 +41,10 @@ where
             results_out,
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.my_fired_off.is_empty() && self.backlog.is_empty()
+    }
 }
 
 impl<EventType, EventArgType, EventReturnType> Emitter<EventType, EventArgType, EventReturnType>
@@ -110,8 +114,8 @@ where
                     let sending_status = ch.send((absolute_pos, event_in, event_arg, real_ret_val));
                     assert!(sending_status.is_ok(), "Couldn't send on the channel");
                 }
-            } else if let Err(_) = join_res {
-                panic!("Task {} panicked",absolute_pos);
+            } else if let Err(_msg) = join_res {
+                panic!("Task {} panicked", absolute_pos);
             }
         }
         something_finished
@@ -121,7 +125,7 @@ where
         let can_do_now = if event.commutes_with_everything(&arg) {
             true
         } else {
-            self.any_earlier_dependences(&event, &arg)
+            !self.any_earlier_dependences(&event, &arg)
         };
 
         let (exists, will_spawn_later, spawned_already) = if can_do_now {
@@ -151,7 +155,8 @@ where
                     None
                 }
             })
-            .next().is_some();
+            .next()
+            .is_some();
 
         self.clear_finished();
 
@@ -170,8 +175,9 @@ where
                     None
                 }
             })
-            .next().is_some();
-        
+            .next()
+            .is_some();
+
         need_to_wait_for_backlog || need_to_wait_for_spawned
     }
 
@@ -235,7 +241,7 @@ where
         */
         loop {
             let something_finished = self.clear_finished();
-            if self.my_fired_off.is_empty() && self.backlog.is_empty() {
+            if self.is_empty() {
                 break;
             }
             if something_finished {
@@ -292,6 +298,7 @@ mod test {
 
         let emission_now = (AB(true), 2);
         expected_emissions.push((emission_now.0, emission_now.1, ()));
+
         let (exists, spawn_later, spawned) = emitter.emit(emission_now.0, emission_now.1);
         total_emissions += 1;
         assert!(exists && spawned && !spawn_later);
