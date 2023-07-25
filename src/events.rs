@@ -73,14 +73,13 @@ where
             let mut still_running_and_dependent =
                 self.my_fired_off
                     .iter()
-                    .filter(|(full_pos, event_type, arg_type, handle)| {
+                    .filter(|(full_pos, event_type, arg_type, _)| {
                         *full_pos < *cur_backlog_pos
                             && !cur_back_log_event.do_interleave(
                                 cur_back_log_arg,
                                 event_type,
                                 arg_type,
                             )
-                            && !handle.is_finished()
                     });
             let mut backlog_and_dependent =
                 self.backlog
@@ -156,6 +155,7 @@ where
     }
 
     fn any_earlier_dependences(&mut self, event: &EventType, arg: &EventArgType) -> bool {
+        self.clear_finished();
         self.clear_backlog();
         let need_to_wait_for_backlog = self
             .backlog
@@ -170,8 +170,6 @@ where
             })
             .next()
             .is_some();
-
-        self.clear_finished();
 
         if need_to_wait_for_backlog {
             return true;
