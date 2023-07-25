@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use log::{info, warn};
 
-pub trait Commuting<Aux> {
-    fn do_commute(&self, my_aux: &Aux, other: &Self, others_aux: &Aux) -> bool;
-    fn commutes_with_everything(&self, my_aux: &Aux) -> bool;
+pub trait Interleaves<Aux> {
+    fn do_interleave(&self, my_aux: &Aux, other: &Self, others_aux: &Aux) -> bool;
+    fn interleaves_with_everything(&self, my_aux: &Aux) -> bool;
 }
 
 type Consumer<EventArgType, EventReturnType> = fn(EventArgType) -> EventReturnType;
@@ -39,7 +39,7 @@ where
 
 impl<EventType, EventArgType, EventReturnType> Emitter<EventType, EventArgType, EventReturnType>
 where
-    EventType: Eq + Hash + Commuting<EventArgType>,
+    EventType: Eq + Hash + Interleaves<EventArgType>,
 {
     pub fn new(
         results_out: Option<Sender<(usize, EventType, EventArgType, EventReturnType)>>,
@@ -62,7 +62,7 @@ where
 
 impl<EventType, EventArgType, EventReturnType> Emitter<EventType, EventArgType, EventReturnType>
 where
-    EventType: Eq + Hash + Commuting<EventArgType>,
+    EventType: Eq + Hash + Interleaves<EventArgType>,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
 {
@@ -75,7 +75,7 @@ where
                     .iter()
                     .filter(|(full_pos, event_type, arg_type, handle)| {
                         *full_pos < *cur_backlog_pos
-                            && !cur_back_log_event.do_commute(
+                            && !cur_back_log_event.do_interleave(
                                 cur_back_log_arg,
                                 event_type,
                                 arg_type,
@@ -87,7 +87,7 @@ where
                     .iter()
                     .filter(|(full_pos, event_type, arg_type)| {
                         *full_pos < *cur_backlog_pos
-                            && !cur_back_log_event.do_commute(
+                            && !cur_back_log_event.do_interleave(
                                 cur_back_log_arg,
                                 event_type,
                                 arg_type,
@@ -135,7 +135,7 @@ where
     }
 
     pub fn emit(&mut self, event: EventType, arg: EventArgType) -> (bool, bool, bool) {
-        let can_do_now = if event.commutes_with_everything(&arg) {
+        let can_do_now = if event.interleaves_with_everything(&arg) {
             true
         } else {
             !self.any_earlier_dependences(&event, &arg)
@@ -162,7 +162,7 @@ where
             .iter()
             .enumerate()
             .filter_map(|(pos_in_spawned, (full_pos, event_type, event_arg))| {
-                if !event_type.do_commute(event_arg, event, arg) {
+                if !event_type.do_interleave(event_arg, event, arg) {
                     Some((pos_in_spawned, *full_pos))
                 } else {
                     None
@@ -182,7 +182,7 @@ where
             .iter()
             .enumerate()
             .filter_map(|(pos_in_spawned, (full_pos, event_type, arg_type, _))| {
-                if !event_type.do_commute(arg_type, event, arg) {
+                if !event_type.do_interleave(arg_type, event, arg) {
                     Some((pos_in_spawned, *full_pos))
                 } else {
                     None
@@ -275,17 +275,17 @@ mod test {
     fn two_events() {
         use std::{sync::mpsc, thread, time::Duration};
 
-        use crate::events::{Commuting, Emitter};
+        use crate::events::{Emitter, Interleaves};
 
         #[derive(PartialEq, Eq, Hash, Copy, Clone)]
         #[repr(transparent)]
         struct AB(bool);
-        impl Commuting<u64> for AB {
-            fn do_commute(&self, _: &u64, other: &Self, _: &u64) -> bool {
+        impl Interleaves<u64> for AB {
+            fn do_interleave(&self, _: &u64, other: &Self, _: &u64) -> bool {
                 self == other
             }
 
-            fn commutes_with_everything(&self, _my_aux: &u64) -> bool {
+            fn interleaves_with_everything(&self, _my_aux: &u64) -> bool {
                 false
             }
         }
