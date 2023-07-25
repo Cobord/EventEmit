@@ -16,11 +16,12 @@ Imagine each thread is doing some IO and they are interacting with independent i
 
 Now it will spawn the threads only when everything that had to occur earlier has already finished.
 
-For example, suppose the following commutation pattern (and there is no extra complication from interleaving)
-- the first two commuted
-- the third didn't commute with the second, but did with the first
-- the fourth commuted with everything
-- the fifth commuted with everything except the second
+For example, suppose the following pattern
+- the first two commuted and could be interleaved arbitrarily
+- the third didn't commute with the second, but it did commute and could be interleaved with the first
+- the fourth commuted with everything and could interleave arbitrarily
+- the fifth commuted with everything and interleaved with all except the second
+  - like they both do ...old_data=*data;....*data=old_data+some_pure_func(some_args);... so they commute but the locks are not in such a way that they could be on two running threads and reporduce the same serial behavior 
 
 Then
 - the first two will spawn as soon as they are emitted
