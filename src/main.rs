@@ -158,7 +158,7 @@ fn main() {
     assert!(j1.join().is_ok());
     for v in rx.iter().take(total_emissions) {
         println!(
-            "Emission {} with payload emit({:?},{:?}) with result {:?} : received on the channel",
+            "Emission {:?} with payload emit({:?},{:?}) with result {:?} : received on the channel",
             v.0, v.1, v.2, v.3
         );
     }

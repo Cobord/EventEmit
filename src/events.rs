@@ -13,15 +13,22 @@ pub trait Interleaves<Aux> {
 
 type Consumer<EventArgType, EventReturnType> = fn(EventArgType) -> EventReturnType;
 
+type WhichEvent = usize;
+
 pub struct Emitter<EventType, EventArgType, EventReturnType>
 where
     EventType: Eq + Hash,
 {
     my_event_responses: HashMap<EventType, Consumer<EventArgType, EventReturnType>>,
-    my_fired_off: Vec<(usize, EventType, EventArgType, JoinHandle<EventReturnType>)>,
-    backlog: Vec<(usize, EventType, EventArgType)>,
-    num_emitted_before: usize,
-    results_out: Option<Sender<(usize, EventType, EventArgType, EventReturnType)>>,
+    my_fired_off: Vec<(
+        WhichEvent,
+        EventType,
+        EventArgType,
+        JoinHandle<EventReturnType>,
+    )>,
+    backlog: Vec<(WhichEvent, EventType, EventArgType)>,
+    num_emitted_before: WhichEvent,
+    results_out: Option<Sender<(WhichEvent, EventType, EventArgType, EventReturnType)>>,
 }
 
 impl<EventType, EventArgType, EventReturnType> Drop
@@ -42,7 +49,7 @@ where
     EventType: Eq + Hash + Interleaves<EventArgType>,
 {
     pub fn new(
-        results_out: Option<Sender<(usize, EventType, EventArgType, EventReturnType)>>,
+        results_out: Option<Sender<(WhichEvent, EventType, EventArgType, EventReturnType)>>,
     ) -> Self {
         let my_event_responses: HashMap<EventType, Consumer<EventArgType, EventReturnType>> =
             HashMap::new();
@@ -102,7 +109,7 @@ where
         ready_to_go.reverse();
         let something_out_of_backlog = !ready_to_go.is_empty();
         for idx in ready_to_go {
-            let go_now: (usize, EventType, EventArgType) = self.backlog.remove(idx);
+            let go_now: (WhichEvent, EventType, EventArgType) = self.backlog.remove(idx);
             self.unchecked_emit(go_now.0, go_now.1, go_now.2);
         }
         something_out_of_backlog
@@ -127,7 +134,7 @@ where
                     assert!(sending_status.is_ok(), "Couldn't send on the channel");
                 }
             } else if let Err(_msg) = join_res {
-                panic!("Task {} panicked", absolute_pos);
+                panic!("Task {:?} panicked", absolute_pos);
             }
         }
         something_finished
@@ -144,7 +151,7 @@ where
             let (exists, spawned) = self.unchecked_emit(self.num_emitted_before, event, arg);
             (exists, false, spawned)
         } else if self.my_event_responses.contains_key(&event) {
-            info!("{} Into backlog", self.num_emitted_before);
+            info!("{:?} Into backlog", self.num_emitted_before);
             self.backlog.push((self.num_emitted_before, event, arg));
             (true, true, false)
         } else {
@@ -194,7 +201,7 @@ where
 
     fn unchecked_emit(
         &mut self,
-        absolute_pos: usize,
+        absolute_pos: WhichEvent,
         event: EventType,
         arg: EventArgType,
     ) -> (bool, bool) {
@@ -351,67 +358,67 @@ mod test {
 
     #[test]
     fn common_resource() {
+        use super::Emitter;
         use std::{
-            sync::{Arc, Mutex},
             cmp::max,
+            sync::{Arc, Mutex},
             thread,
             time::{Duration, Instant},
         };
-        use super::Emitter;
-    
+
         let a = |(other_operand, wait_millis, data1): (i32, u64, Arc<Mutex<i32>>)| {
             thread::sleep(Duration::from_millis(wait_millis));
             let mut data = data1.lock().unwrap();
             *data += other_operand;
         };
-    
+
         let b = |(other_operand, wait_millis, data2): (i32, u64, Arc<Mutex<i32>>)| {
             thread::sleep(Duration::from_millis(wait_millis));
             let mut data = data2.lock().unwrap();
             *data *= other_operand;
         };
-    
+
         let mut emitter: Emitter<ABTemp, (i32, u64, Arc<Mutex<i32>>), ()> = Emitter::new(None);
         let true_new = emitter.on(ABTemp(true), a);
         assert!(true_new);
         let false_new = emitter.on(ABTemp(false), b);
         assert!(false_new);
-    
+
         let mut exp_data_val = 1;
         let data = Arc::new(Mutex::new(exp_data_val));
-    
+
         let mut other_operand;
         let mut expected_time = Duration::from_millis(0);
         let mut serial_time = Duration::from_millis(0);
-    
+
         other_operand = 1;
         let wait_time_1 = 50;
         emitter.emit(ABTemp(true), (other_operand, wait_time_1, data.clone()));
         exp_data_val += other_operand;
-    
+
         other_operand = 10;
         let wait_time_2 = 60;
         emitter.emit(ABTemp(true), (other_operand, wait_time_2, data.clone()));
         exp_data_val += other_operand;
-    
+
         expected_time += Duration::from_millis(max(wait_time_1, wait_time_2));
         serial_time += Duration::from_millis(wait_time_1);
         serial_time += Duration::from_millis(wait_time_2);
-    
+
         other_operand = 2;
         let wait_time_3 = 50;
         emitter.emit(ABTemp(false), (other_operand, wait_time_3, data.clone()));
         exp_data_val *= other_operand;
         expected_time += Duration::from_millis(wait_time_3);
         serial_time += Duration::from_millis(wait_time_3);
-    
+
         other_operand = 24;
         let wait_time_4 = 20;
         emitter.emit(ABTemp(true), (other_operand, wait_time_4, data.clone()));
         exp_data_val += other_operand;
         expected_time += Duration::from_millis(wait_time_4);
         serial_time += Duration::from_millis(wait_time_4);
-    
+
         let loop_time = Duration::from_millis(15);
         let now = Instant::now();
         emitter.wait_for_all(loop_time);
