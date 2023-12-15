@@ -239,6 +239,24 @@ where
         }
     }
 
+    fn all_keys(&self) -> impl Iterator<Item = EventType> + '_
+    where
+        EventType: Clone,
+    {
+        self.my_event_responses.keys().cloned()
+    }
+
+    #[allow(dead_code)]
+    pub fn all_off(&mut self)
+    where
+        EventType: Clone,
+    {
+        let all_registered_events: Vec<EventType> = self.all_keys().collect();
+        all_registered_events.into_iter().for_each(|event| {
+            let _ = self.off(event);
+        })
+    }
+
     pub fn off(&mut self, event: EventType) -> bool {
         // return value is if this actually deleted something
         if self.backlog_uses_this(&event) {
