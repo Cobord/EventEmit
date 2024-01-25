@@ -45,7 +45,9 @@ fn common_resource() {
         *data *= other_operand;
     };
 
-    let mut emitter: Emitter<AB, (i32, u64, Arc<Mutex<i32>>), ()> = Emitter::new(None);
+    let identity = |x| x;
+    type MyArgType = (i32, u64, Arc<Mutex<i32>>);
+    let mut emitter: Emitter<AB, MyArgType, (), _> = Emitter::new(None, identity);
     let true_new = emitter.on(AB(true), a);
     assert!(true_new);
     let false_new = emitter.on(AB(false), b);
@@ -106,8 +108,9 @@ fn main() {
     env_logger::init();
 
     let (tx, rx) = mpsc::channel();
-    let mut emitter: Emitter<AB, u64, ()> = Emitter::new(Some(tx.clone()));
-    let mut emitter2: Emitter<AB, u64, ()> = Emitter::new(Some(tx));
+    let identity = |x| x;
+    let mut emitter: Emitter<AB, u64, (), _> = Emitter::new(Some(tx.clone()), identity);
+    let mut emitter2: Emitter<AB, u64, (), _> = Emitter::new(Some(tx), identity);
     let true_new = emitter.on(AB(true), |wait_time| {
         thread::sleep(Duration::from_secs(wait_time));
         println!("True")

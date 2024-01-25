@@ -15,7 +15,7 @@ type Consumer<EventArgType, EventReturnType> = fn(EventArgType) -> EventReturnTy
 
 type WhichEvent = usize;
 
-pub struct Emitter<EventType, EventArgType, EventReturnType>
+pub struct Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
 {
@@ -28,11 +28,12 @@ where
     )>,
     backlog: Vec<(WhichEvent, EventType, EventArgType)>,
     num_emitted_before: WhichEvent,
-    results_out: Option<Sender<(WhichEvent, EventType, EventArgType, EventReturnType)>>,
+    arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
+    results_out: Option<Sender<(WhichEvent, EventType, EventArgTypeKeep, EventReturnType)>>,
 }
 
-impl<EventType, EventArgType, EventReturnType> Drop
-    for Emitter<EventType, EventArgType, EventReturnType>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep> Drop
+    for Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
 {
@@ -44,12 +45,14 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType> Emitter<EventType, EventArgType, EventReturnType>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash + Interleaves<EventArgType>,
 {
     pub fn new(
-        results_out: Option<Sender<(WhichEvent, EventType, EventArgType, EventReturnType)>>,
+        results_out: Option<Sender<(WhichEvent, EventType, EventArgTypeKeep, EventReturnType)>>,
+        arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
     ) -> Self {
         let my_event_responses: HashMap<EventType, Consumer<EventArgType, EventReturnType>> =
             HashMap::new();
@@ -58,6 +61,7 @@ where
             my_fired_off: Vec::new(),
             backlog: Vec::new(),
             num_emitted_before: 0,
+            arg_transformer_out,
             results_out,
         }
     }
@@ -67,7 +71,8 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType> Emitter<EventType, EventArgType, EventReturnType>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash + Interleaves<EventArgType>,
     EventArgType: Clone + Send + 'static,
@@ -130,7 +135,9 @@ where
             let join_res = done_handle.join();
             if let Ok(real_ret_val) = join_res {
                 if let Some(ch) = &self.results_out {
-                    let sending_status = ch.send((absolute_pos, event_in, event_arg, real_ret_val));
+                    let event_arg_fixed = (self.arg_transformer_out)(event_arg);
+                    let sending_status =
+                        ch.send((absolute_pos, event_in, event_arg_fixed, real_ret_val));
                     assert!(sending_status.is_ok(), "Couldn't send on the channel");
                 }
             } else if let Err(_msg) = join_res {
@@ -321,7 +328,8 @@ mod test {
         use super::Emitter;
 
         let (tx, rx) = mpsc::channel();
-        let mut emitter: Emitter<ABTemp, u64, ()> = Emitter::new(Some(tx));
+        let identity = |x| x;
+        let mut emitter: Emitter<ABTemp, u64, (), _> = Emitter::new(Some(tx), identity);
         let true_new = emitter.on(ABTemp(true), |wait_time| {
             thread::sleep(Duration::from_secs(wait_time));
         });
@@ -396,7 +404,9 @@ mod test {
             *data *= other_operand;
         };
 
-        let mut emitter: Emitter<ABTemp, (i32, u64, Arc<Mutex<i32>>), ()> = Emitter::new(None);
+        type MyArgType = (i32, u64, Arc<Mutex<i32>>);
+        let identity = |x| x;
+        let mut emitter: Emitter<ABTemp, MyArgType, (), _> = Emitter::new(None, identity);
         let true_new = emitter.on(ABTemp(true), a);
         assert!(true_new);
         let false_new = emitter.on(ABTemp(false), b);
