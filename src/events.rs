@@ -405,8 +405,9 @@ mod test {
         };
 
         type MyArgType = (i32, u64, Arc<Mutex<i32>>);
-        let identity = |x| x;
-        let mut emitter: Emitter<ABTemp, MyArgType, (), _> = Emitter::new(None, identity);
+        let dont_show_common_resource = |(_0, _1, _2)| (_0, _1);
+        let mut emitter: Emitter<ABTemp, MyArgType, (), (i32, u64)> =
+            Emitter::new(None, dont_show_common_resource);
         let true_new = emitter.on(ABTemp(true), a);
         assert!(true_new);
         let false_new = emitter.on(ABTemp(false), b);
