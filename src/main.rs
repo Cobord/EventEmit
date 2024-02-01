@@ -1,4 +1,7 @@
 mod events;
+mod general_emitter;
+mod interleaving;
+mod tokio_events;
 
 use std::{
     cmp::max,
@@ -7,7 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::events::{Emitter, Interleaves};
+use crate::general_emitter::GeneralEmitter;
+use crate::interleaving::Interleaves;
+use crate::{events::Emitter, tokio_events::TokioEmitter};
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 #[repr(transparent)]
@@ -28,19 +33,19 @@ impl Debug for AB {
     }
 }
 
-fn common_resource() {
+fn common_resource_1() {
     use std::sync::{Arc, Mutex};
 
     let a = |(other_operand, wait_millis, data1): (i32, u64, Arc<Mutex<i32>>)| {
         thread::sleep(Duration::from_millis(wait_millis));
-        let mut data = data1.lock().unwrap();
+        let mut data = data1.lock().expect("Acquiring lock here shouldn't panic");
         println!("ping ");
         *data += other_operand;
     };
 
     let b = |(other_operand, wait_millis, data2): (i32, u64, Arc<Mutex<i32>>)| {
         thread::sleep(Duration::from_millis(wait_millis));
-        let mut data = data2.lock().unwrap();
+        let mut data = data2.lock().expect("Acquiring lock here shouldn't panic");
         println!("pong ");
         *data *= other_operand;
     };
@@ -49,9 +54,9 @@ fn common_resource() {
     type MyArgType = (i32, u64, Arc<Mutex<i32>>);
     let mut emitter: Emitter<AB, MyArgType, (), _> = Emitter::new(None, identity);
     let true_new = emitter.on(AB(true), a);
-    assert!(true_new);
+    assert_ok_equal!(true_new, true, "Should be no problem turning on");
     let false_new = emitter.on(AB(false), b);
-    assert!(false_new);
+    assert_ok_equal!(false_new, true, "Should be no problem turning on");
 
     let mut exp_data_val = 1;
     let data = Arc::new(Mutex::new(exp_data_val));
@@ -100,32 +105,148 @@ fn common_resource() {
     );
     assert!(elapsed < expected_time + 3 * loop_time);
     assert!(elapsed < serial_time);
-    let data_val = *data.lock().unwrap();
+    let data_val = *data.lock().expect("Acquiring lock here shouldn't panic");
     assert_eq!(data_val, exp_data_val);
 }
 
-fn main() {
-    env_logger::init();
+#[allow(dead_code)]
+fn common_resource_2() {
+    use std::sync::{Arc, Mutex};
 
+    let a = |(other_operand, wait_millis, data1): (i32, u64, Arc<Mutex<i32>>)| {
+        thread::sleep(Duration::from_millis(wait_millis));
+        let mut data = data1.lock().expect("Acquiring lock here shouldn't panic");
+        println!("ping ");
+        *data += other_operand;
+    };
+
+    let b = |(other_operand, wait_millis, data2): (i32, u64, Arc<Mutex<i32>>)| {
+        thread::sleep(Duration::from_millis(wait_millis));
+        let mut data = data2.lock().expect("Acquiring lock here shouldn't panic");
+        println!("pong ");
+        *data *= other_operand;
+    };
+
+    let identity = |x| x;
+    type MyArgType = (i32, u64, Arc<Mutex<i32>>);
+    let (tx, rx) = mpsc::channel();
+    let mut emitter: TokioEmitter<AB, MyArgType, (), _> =
+        TokioEmitter::new(Some(tx.clone()), identity);
+    let true_new = emitter.on(AB(true), a);
+    assert_ok_equal!(true_new, true, "Should be no problem turning on");
+    let false_new = emitter.on(AB(false), b);
+    assert_ok_equal!(false_new, true, "Should be no problem turning on");
+
+    let mut exp_data_val = 1;
+    let data = Arc::new(Mutex::new(exp_data_val));
+
+    let mut other_operand;
+    let mut expected_time = Duration::from_millis(0);
+    let mut serial_time = Duration::from_millis(0);
+    let mut total_operations = 0;
+
+    other_operand = 1;
+    let wait_time_1 = 50;
+    emitter.emit(AB(true), (other_operand, wait_time_1, data.clone()));
+    exp_data_val += other_operand;
+    total_operations += 1;
+    assert_eq!(
+        emitter.count_running() + emitter.count_waiting(),
+        total_operations
+    );
+
+    other_operand = 10;
+    let wait_time_2 = 60;
+    emitter.emit(AB(true), (other_operand, wait_time_2, data.clone()));
+    exp_data_val += other_operand;
+    total_operations += 1;
+    assert_eq!(
+        emitter.count_running() + emitter.count_waiting(),
+        total_operations
+    );
+
+    expected_time += Duration::from_millis(max(wait_time_1, wait_time_2));
+    serial_time += Duration::from_millis(wait_time_1);
+    serial_time += Duration::from_millis(wait_time_2);
+
+    other_operand = 2;
+    let wait_time_3 = 50;
+    emitter.emit(AB(false), (other_operand, wait_time_3, data.clone()));
+    exp_data_val *= other_operand;
+    expected_time += Duration::from_millis(wait_time_3);
+    serial_time += Duration::from_millis(wait_time_3);
+    total_operations += 1;
+    assert_eq!(
+        emitter.count_running() + emitter.count_waiting(),
+        total_operations
+    );
+
+    other_operand = 24;
+    let wait_time_4 = 20;
+    emitter.emit(AB(true), (other_operand, wait_time_4, data.clone()));
+    exp_data_val += other_operand;
+    expected_time += Duration::from_millis(wait_time_4);
+    serial_time += Duration::from_millis(wait_time_4);
+    total_operations += 1;
+    assert_eq!(
+        emitter.count_running() + emitter.count_waiting(),
+        total_operations
+    );
+
+    let loop_time = Duration::from_millis(15);
+    let now = Instant::now();
+    let _ = tx.send((0, AB(true), (1, 2, data.clone()), ()));
+    for v in rx.iter().take(total_operations) {
+        println!(
+            "Emission {:?} with payload emit({:?},operand={:?},sleeping={:?},&mut data) with result {:?} : received on the channel",
+            v.0, v.1, v.2.0, v.2.1, v.3
+        );
+    }
+    emitter.wait_for_all(loop_time);
+    let elapsed = now.elapsed();
+    println!(
+        "{} milliseconds vs {} with no waiting and {} serially",
+        elapsed.as_millis(),
+        expected_time.as_millis(),
+        serial_time.as_millis()
+    );
+    assert!(elapsed < expected_time + 3 * loop_time);
+    assert!(elapsed < serial_time);
+    let data_val = *data.lock().expect("Acquiring lock here shouldn't panic");
+    assert_eq!(data_val, exp_data_val);
+
+    let final_wait = Duration::new(1, 0);
+    let next_item = rx
+        .recv_timeout(final_wait)
+        .map(|(a, b, c, _)| (a, b, c.0, c.1));
+    assert_eq!(next_item, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+}
+
+fn main_part1() {
     let (tx, rx) = mpsc::channel();
     let identity = |x| x;
     let mut emitter: Emitter<AB, u64, (), _> = Emitter::new(Some(tx.clone()), identity);
     let mut emitter2: Emitter<AB, u64, (), _> = Emitter::new(Some(tx), identity);
     let true_new = emitter.on(AB(true), |wait_time| {
-        thread::sleep(Duration::from_secs(wait_time));
-        println!("True")
+        thread::sleep(Duration::from_millis(wait_time * 100));
+        println!("True");
     });
-    assert!(true_new);
+    assert_ok_equal!(true_new, true, "Should be no problem turning on");
     let false_new = emitter.on(AB(false), |wait_time| {
-        thread::sleep(Duration::from_secs(wait_time));
-        println!("False")
+        thread::sleep(Duration::from_millis(wait_time * 100));
+        println!("False");
     });
-    assert!(false_new);
+    assert_ok_equal!(false_new, true, "Should be no problem turning on");
     let true_new = emitter2.on(AB(true), |wait_time| {
-        thread::sleep(Duration::from_secs(wait_time));
-        println!("True from 2")
+        thread::sleep(Duration::from_millis(wait_time * 100));
+        println!("True from 2");
     });
-    assert!(true_new);
+    assert_ok_equal!(true_new, true, "Should be no problem turning on");
+    let true_new = emitter2.on(AB(true), |wait_time| {
+        thread::sleep(Duration::from_millis(wait_time * 100));
+        println!("True from 2");
+    });
+    assert_ok_equal!(true_new, false, "Should not be able to turn on again");
 
     let mut total_emissions = 0;
 
@@ -142,7 +263,22 @@ fn main() {
     assert!(exists && !spawned && spawn_later);
 
     let true_used_to_exist = emitter.off(AB(true));
-    assert!(true_used_to_exist);
+    assert_ok_equal!(
+        true_used_to_exist,
+        true,
+        "Should be able to turn true off because they should already be running"
+    );
+    let true_used_to_exist = emitter.off(AB(true));
+    assert_ok_equal!(
+        true_used_to_exist,
+        false,
+        "Should not be able to turn true off because it doesn't exist anymore"
+    );
+    let false_used_to_exist = emitter.off(AB(false));
+    assert!(
+        false_used_to_exist.is_err(),
+        "Should not be able to turn true off because they are in backlog"
+    );
 
     let (exists, spawn_later, spawned) = emitter.emit(AB(true), 10);
     assert!(!exists && !spawn_later && !spawned);
@@ -157,6 +293,7 @@ fn main() {
     let j2 = thread::spawn(move || {
         emitter2.wait_for_all(Duration::new(1, 0));
     });
+
     assert!(j2.join().is_ok());
     assert!(j1.join().is_ok());
     for v in rx.iter().take(total_emissions) {
@@ -167,11 +304,30 @@ fn main() {
     }
     let final_wait = Duration::new(5, 0);
     println!(
-        "Waiting for {:?} to make sure nothing comes down the channel after wait for all",
+        "Waiting for at most {:?} to make sure nothing comes down the channel after wait for all",
         final_wait
     );
-    let next_item = rx.recv_timeout(final_wait);
-    assert!(next_item.is_err());
 
-    common_resource();
+    let next_item = rx.recv_timeout(final_wait);
+    assert_eq!(next_item, Err(mpsc::RecvTimeoutError::Disconnected));
+}
+
+fn main() {
+    env_logger::init();
+
+    main_part1();
+
+    common_resource_1();
+    /*
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .worker_threads(4)
+        .thread_name("common-resource-main")
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = runtime.enter();
+    let _ = runtime.block_on(async move {
+        common_resource_2();
+    });
+    */
 }

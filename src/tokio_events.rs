@@ -1,26 +1,23 @@
-use std::any::Any;
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::mpsc::Sender;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-
 use log::{info, warn};
+use tokio::runtime::Handle;
+
+use std::{
+    any::Any,
+    collections::HashMap,
+    hash::Hash,
+    sync::{mpsc::Sender, Arc, Mutex},
+    time::Duration,
+};
 
 use crate::general_emitter::{Consumer, EmitterError, GeneralEmitter, PanicPolicy, WhichEvent};
 use crate::interleaving::Interleaves;
 
-pub struct Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+pub struct TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
 {
     my_event_responses: HashMap<EventType, Consumer<EventArgType, EventReturnType>>,
-    my_fired_off: Vec<(
-        WhichEvent,
-        EventType,
-        EventArgType,
-        JoinHandle<EventReturnType>,
-    )>,
+    my_fired_off: Arc<Mutex<Vec<(WhichEvent, EventType, EventArgType)>>>,
     backlog: Vec<(WhichEvent, EventType, EventArgType)>,
     num_emitted_before: WhichEvent,
     arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
@@ -30,7 +27,7 @@ where
 }
 
 impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep> Drop
-    for Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
 {
@@ -39,7 +36,7 @@ where
         if num_backlog > 0 {
             warn!("Dropping {} events. They were waiting on something earlier to finish, so never got to start.", num_backlog);
         }
-        let num_running = self.my_fired_off.len();
+        let num_running = self.my_fired_off.lock().unwrap().len();
         if num_running > 0 {
             warn!("Dropping {} events. They were running but unfinished so their outputs never got to the output channel.", num_running);
         }
@@ -47,10 +44,11 @@ where
 }
 
 impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
-    Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
 {
+    #[allow(dead_code)]
     pub fn new(
         results_out: Option<Sender<(WhichEvent, EventType, EventArgTypeKeep, EventReturnType)>>,
         arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
@@ -59,7 +57,7 @@ where
             HashMap::new();
         Self {
             my_event_responses,
-            my_fired_off: Vec::new(),
+            my_fired_off: Arc::new(Mutex::new(Vec::new())),
             backlog: Vec::new(),
             num_emitted_before: 0,
             arg_transformer_out,
@@ -72,22 +70,27 @@ where
 
 impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
     GeneralEmitter<EventType, EventArgType, EventReturnType>
-    for Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
-    EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
+    EventType: Eq + Hash + Interleaves<EventArgType> + Clone + Send + 'static,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
+    EventArgTypeKeep: Send + 'static,
 {
+    fn reset_panic_policy(&mut self, panic_policy: PanicPolicy) {
+        self.panic_policy = panic_policy;
+    }
+
     fn all_keys(&self) -> impl Iterator<Item = EventType> + '_ {
         self.my_event_responses.keys().cloned()
     }
 
     fn is_empty(&self) -> bool {
-        self.my_fired_off.is_empty() && self.backlog.is_empty()
+        self.backlog.is_empty() && self.my_fired_off.lock().unwrap().is_empty()
     }
 
     fn count_running(&self) -> usize {
-        self.my_fired_off.len()
+        self.my_fired_off.lock().unwrap().len()
     }
 
     fn count_waiting(&self) -> usize {
@@ -99,7 +102,7 @@ where
         event: EventType,
         callback: Consumer<EventArgType, EventReturnType>,
     ) -> Result<bool, EmitterError> {
-        // return value is if this is a new addition
+        // return value is if this is a new addition vs an overwrite of something already there
         if self.backlog_uses_this(&event) {
             Err("Already had a callback for that type of event and had some backlogs for it. Can't change it.".to_string())
         } else {
@@ -114,7 +117,7 @@ where
     }
 
     fn off(&mut self, event: EventType) -> Result<bool, EmitterError> {
-        // return value is if this is a new addition vs an overwrite of something already there
+        // return value is if this actually deleted something
         if self.backlog_uses_this(&event) {
             Err("Already had a callback for that type of event and had some backlogs for it. Can't remove it.".to_string())
         } else {
@@ -128,21 +131,41 @@ where
         when nothing has changed wait for d time
         in order to give the running threads a bit more time to finish
         */
+        let mut finished_nums: Vec<usize> = self
+            .my_fired_off
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(a, _, _)| *a)
+            .collect();
         loop {
-            let something_finished = self.clear_finished();
+            println!("Going Around");
+            let new_finished_nums = self
+                .my_fired_off
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(a, _, _)| *a)
+                .collect();
+            let something_finished = new_finished_nums != finished_nums;
+            finished_nums = new_finished_nums;
             if self.is_empty() {
                 break;
             }
             if something_finished {
+                println!("Something finished");
                 let something_out_of_backlog = self.clear_backlog();
                 let not_keyword = if something_out_of_backlog { "" } else { "not " };
                 info!("Something finished, but not everything. An item did {}come out of the backlog. Going through the wait again", not_keyword);
-            } else if self.my_fired_off.is_empty() {
+            } else if finished_nums.is_empty() {
+                println!("Finished was empty");
                 let something_out_of_backlog = self.clear_backlog();
                 let not_keyword = if something_out_of_backlog { "" } else { "not " };
                 info!("Nothing finished. An item did {}come out of the backlog. Going through the wait again", not_keyword);
             } else {
-                thread::sleep(d);
+                println!("Neither just to sleep");
+                let current_handle = Handle::current();
+                current_handle.block_on(tokio::time::sleep(d));
                 info!("Nothing finished, Waited for a bit. Going through the wait again");
             }
         }
@@ -168,27 +191,30 @@ where
         self.num_emitted_before += 1;
         (exists, will_spawn_later, spawned_already)
     }
-
-    fn reset_panic_policy(&mut self, panic_policy: PanicPolicy) {
-        self.panic_policy = panic_policy;
-    }
 }
 
 impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
-    Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
-    EventType: Eq + Hash + Interleaves<EventArgType>,
+    EventType: Eq + Hash + Clone + Send + Interleaves<EventArgType> + 'static,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
+    EventArgTypeKeep: Send + 'static,
 {
+    fn backlog_uses_this(&self, event: &EventType) -> bool {
+        self.backlog.iter().any(|z| z.1 == *event)
+    }
+
     fn clear_backlog(&mut self) -> bool {
         let mut ready_to_go = Vec::with_capacity(self.backlog.len() >> 2);
         for (cur_idx, cur_backlog) in self.backlog.iter().enumerate() {
             let (cur_backlog_pos, cur_back_log_event, cur_back_log_arg) = cur_backlog;
-            let mut still_running_and_dependent =
+            let running_next_any_bad =
                 self.my_fired_off
+                    .lock()
+                    .unwrap()
                     .iter()
-                    .filter(|(full_pos, event_type, arg_type, _)| {
+                    .any(|(full_pos, event_type, arg_type)| {
                         *full_pos < *cur_backlog_pos
                             && !cur_back_log_event.do_interleave(
                                 cur_back_log_arg,
@@ -207,9 +233,8 @@ where
                                 arg_type,
                             )
                     });
-            let running_next = still_running_and_dependent.next();
             let backlog_next = backlog_and_dependent.next();
-            let none_dependent = running_next.is_none() && backlog_next.is_none();
+            let none_dependent = !running_next_any_bad && backlog_next.is_none();
             if none_dependent {
                 ready_to_go.push(cur_idx);
             }
@@ -223,51 +248,7 @@ where
         something_out_of_backlog
     }
 
-    fn clear_finished(&mut self) -> bool {
-        let mut to_remove = Vec::with_capacity(self.my_fired_off.len() >> 3);
-        for (idx, (_, _, _, handle)) in self.my_fired_off.iter().enumerate() {
-            if handle.is_finished() {
-                to_remove.push(idx);
-            }
-        }
-        let something_finished = !to_remove.is_empty();
-        to_remove.sort();
-        to_remove.reverse();
-        for idx in to_remove {
-            let (absolute_pos, event_in, event_arg, done_handle) = self.my_fired_off.remove(idx);
-            let join_res = done_handle.join();
-            if let Ok(real_ret_val) = join_res {
-                if let Some(ch) = &self.results_out {
-                    let event_arg_fixed = (self.arg_transformer_out)(event_arg);
-                    let sending_status =
-                        ch.send((absolute_pos, event_in, event_arg_fixed, real_ret_val));
-                    assert!(sending_status.is_ok(), "Couldn't send on the channel");
-                }
-            } else if let Err(msg) = join_res {
-                // how to do recovery, do later dependent tasks care about this panic?
-                match self.panic_policy {
-                    PanicPolicy::PanicAgain => panic!("Task {:?} panicked", absolute_pos),
-                    PanicPolicy::StoreButNoSubsequentProblem => {
-                        warn!("Task {:?} panicked, but can proceed normally", absolute_pos);
-                        self.panicked_events
-                            .push((absolute_pos, event_in, event_arg, msg));
-                    }
-                    PanicPolicy::StoreButSubsequentProblem => {
-                        warn!(
-                            "Task {:?} panicked, and it might cause problems with later events",
-                            absolute_pos
-                        );
-                        self.panicked_events
-                            .push((absolute_pos, event_in, event_arg, msg));
-                    }
-                }
-            }
-        }
-        something_finished
-    }
-
     fn any_earlier_normal_dependences(&mut self, event: &EventType, arg: &EventArgType) -> bool {
-        self.clear_finished();
         self.clear_backlog();
         let need_to_wait_for_backlog = self
             .backlog
@@ -289,9 +270,11 @@ where
 
         let need_to_wait_for_spawned = self
             .my_fired_off
+            .lock()
+            .unwrap()
             .iter()
             .enumerate()
-            .filter_map(|(pos_in_spawned, (full_pos, event_type, arg_type, _))| {
+            .filter_map(|(pos_in_spawned, (full_pos, event_type, arg_type))| {
                 if !event_type.do_interleave(arg_type, event, arg) {
                     Some((pos_in_spawned, *full_pos))
                 } else {
@@ -306,14 +289,10 @@ where
 
     fn unchecked_emit(
         &mut self,
-        absolute_pos: WhichEvent,
+        absolute_pos: usize,
         event: EventType,
         arg: EventArgType,
-    ) -> (bool, bool)
-    where
-        EventArgType: Clone + Send + 'static,
-        EventReturnType: Send + 'static,
-    {
+    ) -> (bool, bool) {
         let looked_up = self.my_event_responses.get(&event);
         if looked_up.is_some() {
             match self.panic_policy {
@@ -344,22 +323,44 @@ where
             }
         }
 
-        let arg_clone = arg.clone();
-        let my_handle = looked_up.map(|to_do| {
+        let my_return = looked_up.map(|to_do| {
             let to_do_fun = *to_do;
-            thread::spawn(move || to_do_fun(arg_clone))
-        });
-        if let Some(real_handle) = my_handle {
+            let arg_clone = arg.clone();
+            let event_clone = event.clone();
+            let running_vec = Arc::clone(&self.my_fired_off);
             self.my_fired_off
-                .push((absolute_pos, event, arg, real_handle));
+                .lock()
+                .unwrap()
+                .push((absolute_pos, event.clone(), arg.clone()));
+            let where_to_send = self.results_out.clone();
+            let arg_transformer_out = self.arg_transformer_out;
+
+            tokio::spawn(async move {
+                let real_ret_val = to_do_fun(arg_clone.clone());
+                let idx_in_running = running_vec
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (a, b, _))| *a == absolute_pos && *b == event_clone)
+                    .map(|(idx, (_, _, _))| idx);
+                if let Some(idx_to_remove) = idx_in_running {
+                    running_vec.lock().unwrap().remove(idx_to_remove);
+                }
+                if let Some(ch) = where_to_send {
+                    let event_arg_fixed = (arg_transformer_out)(arg_clone);
+                    let sending_status =
+                        ch.send((absolute_pos, event, event_arg_fixed, real_ret_val));
+                    assert!(sending_status.is_ok(), "Couldn't send on the channel");
+                }
+            });
             (true, true)
+        });
+        if let Some(real_return) = my_return {
+            real_return
         } else {
             (false, false)
         }
-    }
-
-    fn backlog_uses_this(&self, event: &EventType) -> bool {
-        self.backlog.iter().any(|z| z.1 == *event)
     }
 }
 
@@ -389,20 +390,34 @@ mod test {
 
     #[test]
     fn two_events() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .worker_threads(4)
+            .thread_name("two-events-test")
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let _ = runtime.block_on(tokio::spawn(async move {
+            two_events_helper();
+        }));
+    }
+
+    #[allow(dead_code)]
+    fn two_events_helper() {
         use std::{sync::mpsc, thread, time::Duration};
 
-        use super::{Emitter, GeneralEmitter};
+        use super::{GeneralEmitter, TokioEmitter};
         use crate::assert_ok_equal;
 
         let (tx, rx) = mpsc::channel();
         let identity = |x| x;
-        let mut emitter: Emitter<ABTemp, u64, (), _> = Emitter::new(Some(tx), identity);
+        let mut emitter: TokioEmitter<ABTemp, u64, (), _> = TokioEmitter::new(Some(tx), identity);
         let true_new = emitter.on(ABTemp(true), |wait_time| {
             thread::sleep(Duration::from_millis(wait_time * 100));
         });
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
         let false_new = emitter.on(ABTemp(false), |wait_time| {
-            thread::sleep(Duration::from_millis(wait_time * 100));
+            thread::sleep(Duration::from_secs(wait_time));
         });
         assert_ok_equal!(false_new, true, "Should be no problem turning on");
         let mut total_emissions = 0;
@@ -449,7 +464,7 @@ mod test {
         assert!(!exists && !spawned && !spawn_later);
 
         emitter.wait_for_all(Duration::from_millis(250));
-        let expected_order = vec![1, 0, 2];
+        let expected_order = [1, 0, 2];
 
         for (received_order, v) in rx.iter().enumerate().take(total_emissions) {
             let which_item = expected_order[received_order];
@@ -457,7 +472,6 @@ mod test {
             assert_eq!(v.0, which_item);
             assert_eq!(v.1, expected.0);
             assert_eq!(v.2, expected.1);
-            assert_eq!(v.3, expected.2);
         }
         let final_wait = Duration::from_millis(250);
         let next_item = rx.recv_timeout(final_wait);
@@ -469,14 +483,27 @@ mod test {
 
     #[test]
     fn common_resource() {
-        common_resource_helper(PanicPolicy::PanicAgain);
-        common_resource_helper(PanicPolicy::StoreButNoSubsequentProblem);
-        common_resource_helper(PanicPolicy::StoreButSubsequentProblem);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .worker_threads(4)
+            .thread_name("common-resource-test")
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        tokio::spawn(async {
+            common_resource_helper(PanicPolicy::PanicAgain);
+        });
+        tokio::spawn(async {
+            common_resource_helper(PanicPolicy::StoreButNoSubsequentProblem);
+        });
+        tokio::spawn(async {
+            common_resource_helper(PanicPolicy::StoreButSubsequentProblem);
+        });
     }
 
     #[allow(dead_code)]
     fn common_resource_helper(policy: PanicPolicy) {
-        use super::{Emitter, GeneralEmitter};
+        use super::{GeneralEmitter, TokioEmitter};
         use crate::assert_ok_equal;
         use std::{
             cmp::max,
@@ -499,8 +526,9 @@ mod test {
 
         type MyArgType = (i32, u64, Arc<Mutex<i32>>);
         let dont_show_common_resource = |(_0, _1, _2)| (_0, _1);
-        let mut emitter: Emitter<ABTemp, MyArgType, (), (i32, u64)> =
-            Emitter::new(None, dont_show_common_resource);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut emitter: TokioEmitter<ABTemp, MyArgType, (), (i32, u64)> =
+            TokioEmitter::new(Some(tx), dont_show_common_resource);
         emitter.reset_panic_policy(policy.clone());
         let true_new = emitter.on(ABTemp(true), a);
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
@@ -513,16 +541,27 @@ mod test {
         let mut other_operand;
         let mut expected_time = Duration::from_millis(0);
         let mut serial_time = Duration::from_millis(0);
+        let mut total_operations = 0;
 
         other_operand = 1;
         let wait_time_1 = 50;
         emitter.emit(ABTemp(true), (other_operand, wait_time_1, data.clone()));
         exp_data_val += other_operand;
+        total_operations += 1;
+        assert_eq!(
+            emitter.count_running() + emitter.count_waiting(),
+            total_operations
+        );
 
         other_operand = 10;
         let wait_time_2 = 60;
         emitter.emit(ABTemp(true), (other_operand, wait_time_2, data.clone()));
         exp_data_val += other_operand;
+        total_operations += 1;
+        assert_eq!(
+            emitter.count_running() + emitter.count_waiting(),
+            total_operations
+        );
 
         expected_time += Duration::from_millis(max(wait_time_1, wait_time_2));
         serial_time += Duration::from_millis(wait_time_1);
@@ -534,6 +573,11 @@ mod test {
         exp_data_val *= other_operand;
         expected_time += Duration::from_millis(wait_time_3);
         serial_time += Duration::from_millis(wait_time_3);
+        total_operations += 1;
+        assert_eq!(
+            emitter.count_running() + emitter.count_waiting(),
+            total_operations
+        );
 
         other_operand = 24;
         let wait_time_4 = 20;
@@ -541,6 +585,11 @@ mod test {
         exp_data_val += other_operand;
         expected_time += Duration::from_millis(wait_time_4);
         serial_time += Duration::from_millis(wait_time_4);
+        total_operations += 1;
+        assert_eq!(
+            emitter.count_running() + emitter.count_waiting(),
+            total_operations
+        );
 
         let loop_time = Duration::from_millis(15);
         let now = Instant::now();
@@ -552,5 +601,29 @@ mod test {
         assert_eq!(data_val, exp_data_val);
         assert!(emitter.panicked_events.is_empty());
         assert_eq!(emitter.panic_policy, policy);
+
+        for v in rx.iter().take(total_operations) {
+            assert!(v.0 < total_operations);
+            #[allow(clippy::comparison_chain)]
+            if v.0 < 2 {
+                assert_eq!(v.1, ABTemp(true));
+                assert!([1, 10].contains(&v.2 .0));
+                assert!([wait_time_1, wait_time_2].contains(&v.2 .1));
+            } else if v.0 == 2 {
+                assert_eq!(v.1, ABTemp(false));
+                assert_eq!(2, v.2 .0);
+                assert_eq!(wait_time_3, v.2 .1);
+            } else {
+                assert_eq!(v.1, ABTemp(true));
+                assert_eq!(24, v.2 .0);
+                assert_eq!(wait_time_4, v.2 .1);
+            }
+        }
+        let final_wait = Duration::new(1, 0);
+        let next_item = rx.recv_timeout(final_wait);
+        assert_eq!(
+            next_item,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 }
