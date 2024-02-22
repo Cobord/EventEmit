@@ -337,16 +337,16 @@ where
 
             tokio::spawn(async move {
                 let real_ret_val = to_do_fun(arg_clone.clone());
-                let idx_in_running = running_vec
-                    .lock()
-                    .unwrap()
+                let mut running_vec_guard = running_vec.lock().unwrap();
+                let idx_in_running = running_vec_guard
                     .iter()
                     .enumerate()
                     .find(|(_, (a, b, _))| *a == absolute_pos && *b == event_clone)
                     .map(|(idx, (_, _, _))| idx);
                 if let Some(idx_to_remove) = idx_in_running {
-                    running_vec.lock().unwrap().remove(idx_to_remove);
+                    running_vec_guard.remove(idx_to_remove);
                 }
+                drop(running_vec_guard);
                 if let Some(ch) = where_to_send {
                     let event_arg_fixed = (arg_transformer_out)(arg_clone);
                     let sending_status =
@@ -543,8 +543,10 @@ mod test {
         let mut serial_time = Duration::from_millis(0);
         let mut total_operations = 0;
 
+        let now = Instant::now();
+
         other_operand = 1;
-        let wait_time_1 = 50;
+        let wait_time_1 = 150;
         emitter.emit(ABTemp(true), (other_operand, wait_time_1, data.clone()));
         exp_data_val += other_operand;
         total_operations += 1;
@@ -554,7 +556,7 @@ mod test {
         );
 
         other_operand = 10;
-        let wait_time_2 = 60;
+        let wait_time_2 = 160;
         emitter.emit(ABTemp(true), (other_operand, wait_time_2, data.clone()));
         exp_data_val += other_operand;
         total_operations += 1;
@@ -568,7 +570,7 @@ mod test {
         serial_time += Duration::from_millis(wait_time_2);
 
         other_operand = 2;
-        let wait_time_3 = 50;
+        let wait_time_3 = 150;
         emitter.emit(ABTemp(false), (other_operand, wait_time_3, data.clone()));
         exp_data_val *= other_operand;
         expected_time += Duration::from_millis(wait_time_3);
@@ -580,7 +582,7 @@ mod test {
         );
 
         other_operand = 24;
-        let wait_time_4 = 20;
+        let wait_time_4 = 120;
         emitter.emit(ABTemp(true), (other_operand, wait_time_4, data.clone()));
         exp_data_val += other_operand;
         expected_time += Duration::from_millis(wait_time_4);
@@ -592,9 +594,9 @@ mod test {
         );
 
         let loop_time = Duration::from_millis(15);
-        let now = Instant::now();
         emitter.wait_for_all(loop_time);
         let elapsed = now.elapsed();
+        assert!(elapsed > expected_time);
         assert!(elapsed < expected_time + 3 * loop_time);
         assert!(elapsed < serial_time);
         let data_val = *data.lock().expect("Acquiring lock here shouldn't panic");
