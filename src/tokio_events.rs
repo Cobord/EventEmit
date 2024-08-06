@@ -12,6 +12,7 @@ use std::{
 use crate::general_emitter::{Consumer, EmitterError, GeneralEmitter, PanicPolicy, WhichEvent};
 use crate::interleaving::Interleaves;
 
+/// using tokio::spawn
 pub struct TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
@@ -31,6 +32,8 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep> Drop
 where
     EventType: Eq + Hash,
 {
+    /// when we attempt to drop this struct, we give warnings for the potential
+    /// unintended behavior, but it is not a panic to do so anyway
     fn drop(&mut self) {
         let num_backlog = self.backlog.len();
         if num_backlog > 0 {
@@ -48,6 +51,11 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
 {
+    /// can provide a channel to send output information on and how to transform the information
+    /// before it goes out on that channel
+    /// the other information about what events are being processed and what Consumers are associated with each
+    ///     starts off as empty
+    /// by default panics in a Consumer are propogated up causing a panic of this too
     #[allow(dead_code)]
     pub fn new(
         results_out: Option<Sender<(WhichEvent, EventType, EventArgTypeKeep, EventReturnType)>>,
@@ -201,10 +209,18 @@ where
     EventReturnType: Send + 'static,
     EventArgTypeKeep: Send + 'static,
 {
+    /// is an event of this type somewhere in the backlog
     fn backlog_uses_this(&self, event: &EventType) -> bool {
         self.backlog.iter().any(|z| z.1 == *event)
     }
 
+    /// for everything in the backlog if it is ready to go based on interleaving with everything
+    /// that was emitted earlier both that are running and also in the backlog
+    /// those get pulled out of the backlog and are started running
+    /// the return value is if anything did get out of the backlog
+    /// when the return value is false, then we should be giving the running Consumers
+    /// some more time to finish because everything in the backlog was dependent on them either
+    /// directly or indirectly
     fn clear_backlog(&mut self) -> bool {
         let mut ready_to_go = Vec::with_capacity(self.backlog.len() >> 2);
         for (cur_idx, cur_backlog) in self.backlog.iter().enumerate() {
@@ -233,8 +249,7 @@ where
                                 arg_type,
                             )
                     });
-            let backlog_next = backlog_and_dependent.next();
-            let none_dependent = !running_next_any_bad && backlog_next.is_none();
+            let none_dependent = !running_next_any_bad && backlog_and_dependent.next().is_none();
             if none_dependent {
                 ready_to_go.push(cur_idx);
             }
@@ -248,6 +263,7 @@ where
         something_out_of_backlog
     }
 
+    /// if this event were to be spawned with these arguments would it be waiting
     fn any_earlier_normal_dependences(&mut self, event: &EventType, arg: &EventArgType) -> bool {
         self.clear_backlog();
         let need_to_wait_for_backlog = self
@@ -287,6 +303,10 @@ where
         need_to_wait_for_backlog || need_to_wait_for_spawned
     }
 
+    /// helps emit for the case when we can immediately start the Consumer running based on how
+    /// things interleave or don't
+    /// return whether there was such a Consumer for this event
+    /// and whether it was spawned
     fn unchecked_emit(
         &mut self,
         absolute_pos: usize,
@@ -356,6 +376,7 @@ where
             });
             (true, true)
         });
+        #[allow(clippy::manual_unwrap_or_default)]
         if let Some(real_return) = my_return {
             real_return
         } else {
