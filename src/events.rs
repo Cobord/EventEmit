@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use log::{info, warn};
 
-use crate::general_emitter::{Consumer, EmitterError, GeneralEmitter, PanicPolicy, WhichEvent};
+use crate::general_emitter::{
+    Consumer, EmitterError, GeneralEmitter, PanicPolicy, SyncEmitter, WhichEvent,
+};
 use crate::interleaving::Interleaves;
 
 /// using thread::spawn for the running Consumers
@@ -102,25 +104,6 @@ where
         self.backlog.len()
     }
 
-    fn on(
-        &mut self,
-        event: EventType,
-        callback: Consumer<EventArgType, EventReturnType>,
-    ) -> Result<bool, EmitterError> {
-        // return value is if this is a new addition
-        if self.backlog_uses_this(&event) {
-            Err("Already had a callback for that type of event and had some backlogs for it. Can't change it.".to_string())
-        } else {
-            /*
-            no backlog for it
-            any emissions for this type of event that might have been there have already been spawned with the function
-            they were supposed to at the time of emission
-            */
-            let old_callback = self.my_event_responses.insert(event, callback);
-            Ok(old_callback.is_none())
-        }
-    }
-
     fn off(&mut self, event: EventType) -> Result<bool, EmitterError> {
         // return value is if this is a new addition vs an overwrite of something already there
         if self.backlog_uses_this(&event) {
@@ -179,6 +162,34 @@ where
 
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy) {
         self.panic_policy = panic_policy;
+    }
+}
+
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    SyncEmitter<EventType, EventArgType, EventReturnType>
+    for Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+where
+    EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
+    EventArgType: Clone + Send + 'static,
+    EventReturnType: Send + 'static,
+{
+    fn on_sync(
+        &mut self,
+        event: EventType,
+        callback: Consumer<EventArgType, EventReturnType>,
+    ) -> Result<bool, EmitterError> {
+        // return value is if this is a new addition
+        if self.backlog_uses_this(&event) {
+            Err("Already had a callback for that type of event and had some backlogs for it. Can't change it.".to_string())
+        } else {
+            /*
+            no backlog for it
+            any emissions for this type of event that might have been there have already been spawned with the function
+            they were supposed to at the time of emission
+            */
+            let old_callback = self.my_event_responses.insert(event, callback);
+            Ok(old_callback.is_none())
+        }
     }
 }
 
@@ -413,17 +424,17 @@ mod test {
     fn two_events() {
         use std::{sync::mpsc, thread, time::Duration};
 
-        use super::{Emitter, GeneralEmitter};
+        use super::{Emitter, GeneralEmitter, SyncEmitter};
         use crate::assert_ok_equal;
 
         let (tx, rx) = mpsc::channel();
         let identity = |x| x;
         let mut emitter: Emitter<ABTemp, u64, (), _> = Emitter::new(Some(tx), identity);
-        let true_new = emitter.on(ABTemp(true), |wait_time| {
+        let true_new = emitter.on_sync(ABTemp(true), |wait_time| {
             thread::sleep(Duration::from_millis(wait_time * 100));
         });
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
-        let false_new = emitter.on(ABTemp(false), |wait_time| {
+        let false_new = emitter.on_sync(ABTemp(false), |wait_time| {
             thread::sleep(Duration::from_millis(wait_time * 100));
         });
         assert_ok_equal!(false_new, true, "Should be no problem turning on");
@@ -498,7 +509,7 @@ mod test {
 
     #[allow(dead_code)]
     fn common_resource_helper(policy: PanicPolicy) {
-        use super::{Emitter, GeneralEmitter};
+        use super::{Emitter, GeneralEmitter, SyncEmitter};
         use crate::assert_ok_equal;
         use std::{
             cmp::max,
@@ -524,9 +535,9 @@ mod test {
         let mut emitter: Emitter<ABTemp, MyArgType, (), (i32, u64)> =
             Emitter::new(None, dont_show_common_resource);
         emitter.reset_panic_policy(policy.clone());
-        let true_new = emitter.on(ABTemp(true), a);
+        let true_new = emitter.on_sync(ABTemp(true), a);
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
-        let false_new = emitter.on(ABTemp(false), b);
+        let false_new = emitter.on_sync(ABTemp(false), b);
         assert_ok_equal!(false_new, true, "Should be no problem turning on");
 
         let mut exp_data_val = 1;

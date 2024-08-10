@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::general_emitter::GeneralEmitter;
+use crate::general_emitter::{GeneralEmitter, SyncEmitter};
 use crate::interleaving::Interleaves;
 use crate::{events::Emitter, tokio_events::TokioEmitter};
 
@@ -53,9 +53,9 @@ fn common_resource_1() {
     let identity = |x| x;
     type MyArgType = (i32, u64, Arc<Mutex<i32>>);
     let mut emitter: Emitter<AB, MyArgType, (), _> = Emitter::new(None, identity);
-    let true_new = emitter.on(AB(true), a);
+    let true_new = emitter.on_sync(AB(true), a);
     assert_ok_equal!(true_new, true, "Should be no problem turning on");
-    let false_new = emitter.on(AB(false), b);
+    let false_new = emitter.on_sync(AB(false), b);
     assert_ok_equal!(false_new, true, "Should be no problem turning on");
 
     let mut exp_data_val = 1;
@@ -113,28 +113,28 @@ fn common_resource_1() {
 fn common_resource_2() {
     use std::sync::{Arc, Mutex};
 
-    let a = |(other_operand, wait_millis, data1): (i32, u64, Arc<Mutex<i32>>)| {
+    fn a((other_operand, wait_millis, data1): (i32, u64, Arc<Mutex<i32>>)) {
         thread::sleep(Duration::from_millis(wait_millis));
         let mut data = data1.lock().expect("Acquiring lock here shouldn't panic");
         println!("ping ");
         *data += other_operand;
-    };
+    }
 
-    let b = |(other_operand, wait_millis, data2): (i32, u64, Arc<Mutex<i32>>)| {
+    fn b((other_operand, wait_millis, data2): (i32, u64, Arc<Mutex<i32>>)) {
         thread::sleep(Duration::from_millis(wait_millis));
         let mut data = data2.lock().expect("Acquiring lock here shouldn't panic");
         println!("pong ");
         *data *= other_operand;
-    };
+    }
 
     let identity = |x| x;
     type MyArgType = (i32, u64, Arc<Mutex<i32>>);
     let (tx, rx) = mpsc::channel();
     let mut emitter: TokioEmitter<AB, MyArgType, (), _> =
         TokioEmitter::new(Some(tx.clone()), identity);
-    let true_new = emitter.on(AB(true), a);
+    let true_new = emitter.on_sync(AB(true), a);
     assert_ok_equal!(true_new, true, "Should be no problem turning on");
-    let false_new = emitter.on(AB(false), b);
+    let false_new = emitter.on_sync(AB(false), b);
     assert_ok_equal!(false_new, true, "Should be no problem turning on");
 
     let mut exp_data_val = 1;
@@ -227,22 +227,22 @@ fn main_part1() {
     let identity = |x| x;
     let mut emitter: Emitter<AB, u64, (), _> = Emitter::new(Some(tx.clone()), identity);
     let mut emitter2: Emitter<AB, u64, (), _> = Emitter::new(Some(tx), identity);
-    let true_new = emitter.on(AB(true), |wait_time| {
+    let true_new = emitter.on_sync(AB(true), |wait_time| {
         thread::sleep(Duration::from_millis(wait_time * 100));
         println!("True");
     });
     assert_ok_equal!(true_new, true, "Should be no problem turning on");
-    let false_new = emitter.on(AB(false), |wait_time| {
+    let false_new = emitter.on_sync(AB(false), |wait_time| {
         thread::sleep(Duration::from_millis(wait_time * 100));
         println!("False");
     });
     assert_ok_equal!(false_new, true, "Should be no problem turning on");
-    let true_new = emitter2.on(AB(true), |wait_time| {
+    let true_new = emitter2.on_sync(AB(true), |wait_time| {
         thread::sleep(Duration::from_millis(wait_time * 100));
         println!("True from 2");
     });
     assert_ok_equal!(true_new, true, "Should be no problem turning on");
-    let true_new = emitter2.on(AB(true), |wait_time| {
+    let true_new = emitter2.on_sync(AB(true), |wait_time| {
         thread::sleep(Duration::from_millis(wait_time * 100));
         println!("True from 2");
     });

@@ -1,7 +1,38 @@
+use either::Either;
+
 use crate::interleaving::Interleaves;
+use std::future::Future;
+use std::marker::PhantomData;
+use std::pin::Pin;
 use std::{hash::Hash, time::Duration};
 
 pub type Consumer<EventArgType, EventReturnType> = fn(EventArgType) -> EventReturnType;
+
+pub struct AsyncConsumer<EventArgType: 'static, EventReturnType: 'static> {
+    pub(crate) my_func:
+        &'static dyn Fn(EventArgType) -> Pin<Box<dyn Send + Future<Output = EventReturnType>>>,
+    dummy_arg: PhantomData<EventArgType>,
+    dummy_ret: PhantomData<EventReturnType>,
+}
+
+impl<EventArgType: 'static, EventReturnType: 'static> AsyncConsumer<EventArgType, EventReturnType> {
+    #[allow(dead_code)]
+    pub fn new<F>(my_func: F) -> Self
+    where
+        F : Fn(EventArgType) -> dyn Future<Output = EventReturnType>,
+        EventArgType : 'static,
+        EventReturnType : 'static + Send
+    {
+        Self {
+            my_func: todo!(),
+            dummy_arg: PhantomData,
+            dummy_ret: PhantomData,
+        }        
+    }
+}
+
+pub type EitherConsumer<EventArgType, EventReturnType> =
+    Either<Consumer<EventArgType, EventReturnType>, AsyncConsumer<EventArgType, EventReturnType>>;
 
 pub type WhichEvent = usize;
 
@@ -24,7 +55,6 @@ pub trait GeneralEmitter<EventType, EventArgType, EventReturnType>
 where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
 {
-
     /// change how we react to panics
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy);
 
@@ -40,17 +70,6 @@ where
     /// how many are not being run right now because they have to wait for something that is
     /// before them that is either running but not finished or is also waiting
     fn count_waiting(&self) -> usize;
-
-    /// set what to run when we emit a particular EventType
-    /// there can't be anything waiting of this particular event
-    /// because the Consumer that was associated with it at the time
-    /// is what we presumably intended to run, rather than this new Consumer
-    /// if none of the events in process use this event, then we can reset it
-    fn on(
-        &mut self,
-        event: EventType,
-        callback: Consumer<EventArgType, EventReturnType>,
-    ) -> Result<bool, EmitterError>;
 
     /// we can completely remove the ability to run a Consumer upon this event
     /// as with on, there can't be anything waiting of this particular event
@@ -95,6 +114,41 @@ where
     /// last two are mutually exclusive
     /// if there is no Consumer, both of the others are false but also meaningless
     fn emit(&mut self, event: EventType, arg: EventArgType) -> (bool, bool, bool);
+}
+
+pub trait SyncEmitter<EventType, EventArgType, EventReturnType>:
+    GeneralEmitter<EventType, EventArgType, EventReturnType>
+where
+    EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
+{
+    /// set what to run when we emit a particular EventType
+    /// there can't be anything waiting of this particular event
+    /// because the Consumer that was associated with it at the time
+    /// is what we presumably intended to run, rather than this new Consumer
+    /// if none of the events in process use this event, then we can reset it
+    fn on_sync(
+        &mut self,
+        event: EventType,
+        callback: Consumer<EventArgType, EventReturnType>,
+    ) -> Result<bool, EmitterError>;
+}
+
+pub trait AsyncEmitter<EventType, EventArgType, EventReturnType>:
+    GeneralEmitter<EventType, EventArgType, EventReturnType>
+where
+    EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
+{
+    /// set what to run when we emit a particular EventType
+    /// there can't be anything waiting of this particular event
+    /// because the Consumer that was associated with it at the time
+    /// is what we presumably intended to run, rather than this new Consumer
+    /// if none of the events in process use this event, then we can reset it
+    #[allow(dead_code)]
+    fn on_async(
+        &mut self,
+        event: EventType,
+        callback: AsyncConsumer<EventArgType, EventReturnType>,
+    ) -> Result<bool, EmitterError>;
 }
 
 #[macro_export]

@@ -1,23 +1,32 @@
+// TODO
+
+use either::Either::{Left, Right};
 use log::{info, warn};
 use tokio::runtime::Handle;
 
 use std::{
     any::Any,
     collections::HashMap,
+    future::IntoFuture,
     hash::Hash,
     sync::{mpsc::Sender, Arc, Mutex},
     time::Duration,
 };
 
-use crate::general_emitter::{Consumer, EmitterError, GeneralEmitter, PanicPolicy, WhichEvent};
+use crate::general_emitter::{
+    AsyncConsumer, AsyncEmitter, Consumer, EitherConsumer, EmitterError, GeneralEmitter,
+    PanicPolicy, SyncEmitter, WhichEvent,
+};
 use crate::interleaving::Interleaves;
 
 /// using tokio::spawn
 pub struct TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
+    EventReturnType: 'static + Send + Sync,
+    EventArgType: 'static,
 {
-    my_event_responses: HashMap<EventType, Consumer<EventArgType, EventReturnType>>,
+    my_event_responses: HashMap<EventType, EitherConsumer<EventArgType, EventReturnType>>,
     my_fired_off: Arc<Mutex<Vec<(WhichEvent, EventType, EventArgType)>>>,
     backlog: Vec<(WhichEvent, EventType, EventArgType)>,
     num_emitted_before: WhichEvent,
@@ -31,6 +40,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep> Drop
     for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
+    EventReturnType: Send + Sync,
 {
     /// when we attempt to drop this struct, we give warnings for the potential
     /// unintended behavior, but it is not a panic to do so anyway
@@ -50,6 +60,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
     TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash,
+    EventReturnType: Send + Sync,
 {
     /// can provide a channel to send output information on and how to transform the information
     /// before it goes out on that channel
@@ -61,7 +72,7 @@ where
         results_out: Option<Sender<(WhichEvent, EventType, EventArgTypeKeep, EventReturnType)>>,
         arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
     ) -> Self {
-        let my_event_responses: HashMap<EventType, Consumer<EventArgType, EventReturnType>> =
+        let my_event_responses: HashMap<EventType, EitherConsumer<EventArgType, EventReturnType>> =
             HashMap::new();
         Self {
             my_event_responses,
@@ -82,7 +93,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone + Send + 'static,
     EventArgType: Clone + Send + 'static,
-    EventReturnType: Send + 'static,
+    EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
 {
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy) {
@@ -103,25 +114,6 @@ where
 
     fn count_waiting(&self) -> usize {
         self.backlog.len()
-    }
-
-    fn on(
-        &mut self,
-        event: EventType,
-        callback: Consumer<EventArgType, EventReturnType>,
-    ) -> Result<bool, EmitterError> {
-        // return value is if this is a new addition vs an overwrite of something already there
-        if self.backlog_uses_this(&event) {
-            Err("Already had a callback for that type of event and had some backlogs for it. Can't change it.".to_string())
-        } else {
-            /*
-            no backlog for it
-            any emissions for this type of event that might have been there have already been spawned with the function
-            they were supposed to at the time of emission
-            */
-            let old_callback = self.my_event_responses.insert(event, callback);
-            Ok(old_callback.is_none())
-        }
     }
 
     fn off(&mut self, event: EventType) -> Result<bool, EmitterError> {
@@ -202,11 +194,70 @@ where
 }
 
 impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    SyncEmitter<EventType, EventArgType, EventReturnType>
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+where
+    EventType: Eq + Hash + Interleaves<EventArgType> + Clone + Send + 'static,
+    EventArgType: Clone + Send + 'static,
+    EventReturnType: Send + Sync + 'static,
+    EventArgTypeKeep: Send + 'static,
+{
+    fn on_sync(
+        &mut self,
+        event: EventType,
+        callback: Consumer<EventArgType, EventReturnType>,
+    ) -> Result<bool, EmitterError> {
+        // return value is if this is a new addition vs an overwrite of something already there
+        if self.backlog_uses_this(&event) {
+            Err("Already had a callback for that type of event and had some backlogs for it. Can't change it.".to_string())
+        } else {
+            /*
+            no backlog for it
+            any emissions for this type of event that might have been there have already been spawned with the function
+            they were supposed to at the time of emission
+            */
+            let old_callback = self.my_event_responses.insert(event, Left(callback));
+            Ok(old_callback.is_none())
+        }
+    }
+}
+
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    AsyncEmitter<EventType, EventArgType, EventReturnType>
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+where
+    EventType: Eq + Hash + Interleaves<EventArgType> + Clone + Send + 'static,
+    EventArgType: Clone + Send + 'static,
+    EventReturnType: Send + Sync + 'static,
+    EventArgTypeKeep: Send + 'static,
+{
+    #[allow(dead_code)]
+    fn on_async(
+        &mut self,
+        event: EventType,
+        callback: AsyncConsumer<EventArgType, EventReturnType>,
+    ) -> Result<bool, EmitterError> {
+        // return value is if this is a new addition vs an overwrite of something already there
+        if self.backlog_uses_this(&event) {
+            Err("Already had a callback for that type of event and had some backlogs for it. Can't change it.".to_string())
+        } else {
+            /*
+            no backlog for it
+            any emissions for this type of event that might have been there have already been spawned with the function
+            they were supposed to at the time of emission
+            */
+            let old_callback = self.my_event_responses.insert(event, Right(callback));
+            Ok(old_callback.is_none())
+        }
+    }
+}
+
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
     TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
 where
     EventType: Eq + Hash + Clone + Send + Interleaves<EventArgType> + 'static,
     EventArgType: Clone + Send + 'static,
-    EventReturnType: Send + 'static,
+    EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
 {
     /// is an event of this type somewhere in the backlog
@@ -344,7 +395,6 @@ where
         }
 
         let my_return = looked_up.map(|to_do| {
-            let to_do_fun = *to_do;
             let arg_clone = arg.clone();
             let event_clone = event.clone();
             let running_vec = Arc::clone(&self.my_fired_off);
@@ -354,27 +404,55 @@ where
                 .push((absolute_pos, event.clone(), arg.clone()));
             let where_to_send = self.results_out.clone();
             let arg_transformer_out = self.arg_transformer_out;
-
-            tokio::spawn(async move {
-                let real_ret_val = to_do_fun(arg_clone.clone());
-                let mut running_vec_guard = running_vec.lock().unwrap();
-                let idx_in_running = running_vec_guard
-                    .iter()
-                    .enumerate()
-                    .find(|(_, (a, b, _))| *a == absolute_pos && *b == event_clone)
-                    .map(|(idx, (_, _, _))| idx);
-                if let Some(idx_to_remove) = idx_in_running {
-                    running_vec_guard.remove(idx_to_remove);
+            match to_do {
+                Left(temp_to_do) => {
+                    let to_do_fun = *temp_to_do;
+                    tokio::spawn(async move {
+                        let real_ret_val = to_do_fun(arg_clone.clone());
+                        let mut running_vec_guard = running_vec.lock().unwrap();
+                        let idx_in_running = running_vec_guard
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (a, b, _))| *a == absolute_pos && *b == event_clone)
+                            .map(|(idx, (_, _, _))| idx);
+                        if let Some(idx_to_remove) = idx_in_running {
+                            running_vec_guard.remove(idx_to_remove);
+                        }
+                        drop(running_vec_guard);
+                        if let Some(ch) = where_to_send {
+                            let event_arg_fixed = (arg_transformer_out)(arg_clone);
+                            let sending_status =
+                                ch.send((absolute_pos, event, event_arg_fixed, real_ret_val));
+                            assert!(sending_status.is_ok(), "Couldn't send on the channel");
+                        }
+                    });
+                    (true, true)
                 }
-                drop(running_vec_guard);
-                if let Some(ch) = where_to_send {
-                    let event_arg_fixed = (arg_transformer_out)(arg_clone);
-                    let sending_status =
-                        ch.send((absolute_pos, event, event_arg_fixed, real_ret_val));
-                    assert!(sending_status.is_ok(), "Couldn't send on the channel");
+                Right(temp_to_do) => {
+                    let temp_to_do_func = temp_to_do.my_func;
+                    let fut_ret_val = temp_to_do_func(arg_clone.clone());
+                    tokio::spawn(async move {
+                        let real_ret_val = fut_ret_val.into_future().await;
+                        let mut running_vec_guard = running_vec.lock().unwrap();
+                        let idx_in_running = running_vec_guard
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (a, b, _))| *a == absolute_pos && *b == event_clone)
+                            .map(|(idx, (_, _, _))| idx);
+                        if let Some(idx_to_remove) = idx_in_running {
+                            running_vec_guard.remove(idx_to_remove);
+                        }
+                        drop(running_vec_guard);
+                        if let Some(ch) = where_to_send {
+                            let event_arg_fixed = (arg_transformer_out)(arg_clone);
+                            let sending_status =
+                                ch.send((absolute_pos, event, event_arg_fixed, real_ret_val));
+                            assert!(sending_status.is_ok(), "Couldn't send on the channel");
+                        }
+                    });
+                    (true, true)
                 }
-            });
-            (true, true)
+            }
         });
         #[allow(clippy::manual_unwrap_or_default)]
         if let Some(real_return) = my_return {
@@ -427,19 +505,24 @@ mod test {
     fn two_events_helper() {
         use std::{sync::mpsc, thread, time::Duration};
 
-        use super::{GeneralEmitter, TokioEmitter};
+        use super::{GeneralEmitter, SyncEmitter, TokioEmitter};
         use crate::assert_ok_equal;
 
         let (tx, rx) = mpsc::channel();
         let identity = |x| x;
         let mut emitter: TokioEmitter<ABTemp, u64, (), _> = TokioEmitter::new(Some(tx), identity);
-        let true_new = emitter.on(ABTemp(true), |wait_time| {
-            thread::sleep(Duration::from_millis(wait_time * 100));
-        });
+
+        async fn sleeper(wait_time: u64, multiplier: u64) {
+            let _ = tokio::time::sleep(Duration::from_millis(wait_time * multiplier)).await;
+        }
+        fn blocking_sleeper(wait_time: u64, multiplier: u64) {
+            thread::sleep(Duration::from_millis(wait_time * multiplier));
+        }
+
+        let true_new: Result<bool, String> =
+            emitter.on_sync(ABTemp(true), |z| blocking_sleeper(z, 100));
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
-        let false_new = emitter.on(ABTemp(false), |wait_time| {
-            thread::sleep(Duration::from_secs(wait_time));
-        });
+        let false_new = emitter.on_sync(ABTemp(false), |z| blocking_sleeper(z, 1));
         assert_ok_equal!(false_new, true, "Should be no problem turning on");
         let mut total_emissions = 0;
         let mut expected_emissions: Vec<(ABTemp, u64, ())> = Vec::with_capacity(3);
@@ -524,7 +607,7 @@ mod test {
 
     #[allow(dead_code)]
     fn common_resource_helper(policy: PanicPolicy) {
-        use super::{GeneralEmitter, TokioEmitter};
+        use super::{GeneralEmitter, SyncEmitter, TokioEmitter};
         use crate::assert_ok_equal;
         use std::{
             cmp::max,
@@ -551,9 +634,9 @@ mod test {
         let mut emitter: TokioEmitter<ABTemp, MyArgType, (), (i32, u64)> =
             TokioEmitter::new(Some(tx), dont_show_common_resource);
         emitter.reset_panic_policy(policy.clone());
-        let true_new = emitter.on(ABTemp(true), a);
+        let true_new = emitter.on_sync(ABTemp(true), a);
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
-        let false_new = emitter.on(ABTemp(false), b);
+        let false_new = emitter.on_sync(ABTemp(false), b);
         assert_ok_equal!(false_new, true, "Should be no problem turning on");
 
         let mut exp_data_val = 1;
