@@ -4,7 +4,7 @@ use crate::interleaving::Interleaves;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::{hash::Hash, time::Duration};
+use std::time::Duration;
 
 pub type Consumer<EventArgType, EventReturnType> = fn(EventArgType) -> EventReturnType;
 
@@ -53,7 +53,7 @@ pub enum PanicPolicy {
 
 pub trait GeneralEmitter<EventType, EventArgType, EventReturnType>
 where
-    EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
+    EventType: Eq + Interleaves<EventArgType>,
 {
     /// change how we react to panics
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy);
@@ -103,6 +103,11 @@ where
     /// in order to give the running a bit more time to finish
     fn wait_for_all(&mut self, d: Duration);
 
+    /// wait until anything running now gets finished
+    /// when nothing has changed, wait for d time
+    /// in order to give the running a bit more time to finish
+    fn wait_for_any(&mut self, d: Duration) -> (bool, Option<usize>);
+
     /// either the start the associated Consumer running
     /// - or put it in the backlog
     /// - or if it is sure to panic according to PanicPolicy, don't store that
@@ -119,7 +124,7 @@ where
 pub trait SyncEmitter<EventType, EventArgType, EventReturnType>:
     GeneralEmitter<EventType, EventArgType, EventReturnType>
 where
-    EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
+    EventType: Eq + Interleaves<EventArgType>,
 {
     /// set what to run when we emit a particular EventType
     /// there can't be anything waiting of this particular event
@@ -136,7 +141,7 @@ where
 pub trait AsyncEmitter<EventType, EventArgType, EventReturnType>:
     GeneralEmitter<EventType, EventArgType, EventReturnType>
 where
-    EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
+    EventType: Eq + Interleaves<EventArgType>,
 {
     /// set what to run when we emit a particular EventType
     /// there can't be anything waiting of this particular event

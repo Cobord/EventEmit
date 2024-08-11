@@ -4,6 +4,8 @@ mod interleaving;
 mod tokio_events;
 mod utils;
 
+mod cascading;
+
 use std::{
     cmp::max,
     sync::mpsc,

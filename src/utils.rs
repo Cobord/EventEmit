@@ -110,7 +110,8 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
     }
 
     fn len(&self) -> usize {
-        self.iter().fold(0, |acc, item| if item.is_none() {acc} else {acc + 1})
+        self.iter()
+            .fold(0, |acc, item| if item.is_none() { acc } else { acc + 1 })
     }
 
     fn any(&self, predicate: impl Fn(&ValueType) -> bool) -> bool {
@@ -129,7 +130,7 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
             self[slightly_preferred_key] = Some(value);
             slightly_preferred_key
         } else {
-            for (where_to_put,cur_value) in self.iter_mut().enumerate() {
+            for (where_to_put, cur_value) in self.iter_mut().enumerate() {
                 if cur_value.is_none() {
                     *cur_value = Some(value);
                     return where_to_put;
@@ -164,7 +165,7 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
         } else {
             self.iter()
                 .enumerate()
-                .filter_map(|(idx,value)| {
+                .filter_map(|(idx, value)| {
                     if let Some(real_value) = value {
                         if predicate(real_value) {
                             Some(idx)
@@ -173,7 +174,7 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
                         }
                     } else {
                         None
-                    }                    
+                    }
                 })
                 .next()
         }
@@ -186,10 +187,12 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
     }
 
     fn map_values<T>(&self, value_mapper: impl Fn(&ValueType) -> T) -> Vec<T> {
-        self.iter().filter_map(|value| {
-            #[allow(clippy::redundant_closure)]
-            value.as_ref().map(|v| value_mapper(v))
-        }).collect()
+        self.iter()
+            .filter_map(|value| {
+                #[allow(clippy::redundant_closure)]
+                value.as_ref().map(|v| value_mapper(v))
+            })
+            .collect()
     }
 
     fn find_all(&self, predicate: impl Fn(&ValueType) -> bool) -> Vec<usize> {

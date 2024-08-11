@@ -145,6 +145,24 @@ where
         }
     }
 
+    fn wait_for_any(&mut self, d: Duration) -> (bool, Option<usize>) {
+        loop {
+            let (something_finished, count_finished) = self.clear_finished();
+            if something_finished {
+                return (true, Some(count_finished));
+            } else if self.is_empty() {
+                return (false, Some(0));
+            } else if self.my_fired_off.is_empty() {
+                let something_out_of_backlog = self.clear_backlog();
+                let not_keyword = if something_out_of_backlog { "" } else { "not " };
+                info!("Nothing finished. An item did {}come out of the backlog. Going through the wait again", not_keyword);
+            } else {
+                thread::sleep(d);
+                info!("Nothing finished, Waited for a bit. Going through the wait again");
+            }
+        }
+    }
+
     fn wait_for_all(&mut self, d: Duration) {
         /*
         everything running in threads now and all the stuff in the backlog gets finished
@@ -152,7 +170,7 @@ where
         in order to give the running threads a bit more time to finish
         */
         loop {
-            let something_finished = self.clear_finished();
+            let (something_finished, _) = self.clear_finished();
             if self.is_empty() {
                 break;
             }
@@ -300,11 +318,12 @@ where
     /// remove the finished JoinHandles
     /// send their outputs on the channel if applicable
     /// if they panicked, do the appropriate response based on the PanicPolicy
-    fn clear_finished(&mut self) -> bool {
+    fn clear_finished(&mut self) -> (bool, usize) {
         let mut to_remove = self
             .my_fired_off
             .find_all(|(_, _, _, handle)| handle.is_finished());
         let something_finished = !to_remove.is_empty();
+        let count_finished = to_remove.len();
         to_remove.sort();
         to_remove.reverse();
         for idx in to_remove {
@@ -340,7 +359,7 @@ where
                 }
             }
         }
-        something_finished
+        (something_finished, count_finished)
     }
 
     /// if this event were to be spawned with these arguments would it be waiting

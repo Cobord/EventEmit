@@ -130,6 +130,38 @@ where
         }
     }
 
+    fn wait_for_any(&mut self, d: Duration) -> (bool, Option<usize>) {
+        let mut running_nums: Vec<usize> =
+            self.my_fired_off.lock().unwrap().map_values(|(a, _, _)| *a);
+        loop {
+            info!("Going Around");
+            let new_running_nums = self.my_fired_off.lock().unwrap().map_values(|(a, _, _)| *a);
+            let something_finished = new_running_nums != running_nums;
+            if something_finished {
+                let how_many_before_not_now = running_nums.iter().fold(0, |acc, z| {
+                    if new_running_nums.contains(z) {
+                        acc
+                    } else {
+                        acc + 1
+                    }
+                });
+                return (true, Some(how_many_before_not_now));
+            } else if self.is_empty() {
+                return (false, Some(0));
+            } else if running_nums.is_empty() {
+                let something_out_of_backlog = self.clear_backlog();
+                let not_keyword = if something_out_of_backlog { "" } else { "not " };
+                info!("Nothing finished. An item did {}come out of the backlog. Going through the wait again", not_keyword);
+            } else {
+                println!("Neither just to sleep");
+                let current_handle = Handle::current();
+                current_handle.block_on(tokio::time::sleep(d));
+                info!("Nothing finished, Waited for a bit. Going through the wait again");
+            }
+            running_nums = new_running_nums;
+        }
+    }
+
     fn wait_for_all(&mut self, d: Duration) {
         /*
         everything running in threads now and all the stuff in the backlog gets finished
