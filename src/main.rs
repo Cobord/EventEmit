@@ -2,6 +2,7 @@ mod events;
 mod general_emitter;
 mod interleaving;
 mod tokio_events;
+mod utils;
 
 use std::{
     cmp::max,
@@ -12,7 +13,7 @@ use std::{
 
 use crate::general_emitter::{GeneralEmitter, SyncEmitter};
 use crate::interleaving::Interleaves;
-use crate::{events::Emitter, tokio_events::TokioEmitter};
+use crate::{events::SpecificThreadEmitter, tokio_events::SpecificTokioEmitter};
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 #[repr(transparent)]
@@ -52,7 +53,8 @@ fn common_resource_1() {
 
     let identity = |x| x;
     type MyArgType = (i32, u64, Arc<Mutex<i32>>);
-    let mut emitter: Emitter<AB, MyArgType, (), _> = Emitter::new(None, identity);
+    let mut emitter: SpecificThreadEmitter<AB, MyArgType, (), _> =
+        SpecificThreadEmitter::new(None, identity);
     let true_new = emitter.on_sync(AB(true), a);
     assert_ok_equal!(true_new, true, "Should be no problem turning on");
     let false_new = emitter.on_sync(AB(false), b);
@@ -130,8 +132,8 @@ fn common_resource_2() {
     let identity = |x| x;
     type MyArgType = (i32, u64, Arc<Mutex<i32>>);
     let (tx, rx) = mpsc::channel();
-    let mut emitter: TokioEmitter<AB, MyArgType, (), _> =
-        TokioEmitter::new(Some(tx.clone()), identity);
+    let mut emitter: SpecificTokioEmitter<AB, MyArgType, (), _> =
+        SpecificTokioEmitter::new(Some(tx.clone()), identity);
     let true_new = emitter.on_sync(AB(true), a);
     assert_ok_equal!(true_new, true, "Should be no problem turning on");
     let false_new = emitter.on_sync(AB(false), b);
@@ -225,8 +227,10 @@ fn common_resource_2() {
 fn main_part1() {
     let (tx, rx) = mpsc::channel();
     let identity = |x| x;
-    let mut emitter: Emitter<AB, u64, (), _> = Emitter::new(Some(tx.clone()), identity);
-    let mut emitter2: Emitter<AB, u64, (), _> = Emitter::new(Some(tx), identity);
+    let mut emitter: SpecificThreadEmitter<AB, u64, (), _> =
+        SpecificThreadEmitter::new(Some(tx.clone()), identity);
+    let mut emitter2: SpecificThreadEmitter<AB, u64, (), _> =
+        SpecificThreadEmitter::new(Some(tx), identity);
     let true_new = emitter.on_sync(AB(true), |wait_time| {
         thread::sleep(Duration::from_millis(wait_time * 100));
         println!("True");

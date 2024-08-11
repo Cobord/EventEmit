@@ -18,16 +18,18 @@ use crate::general_emitter::{
     PanicPolicy, SyncEmitter, WhichEvent,
 };
 use crate::interleaving::Interleaves;
+use crate::utils::JunkMap;
 
 /// using tokio::spawn
-pub struct TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+pub struct TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
     EventReturnType: 'static + Send + Sync,
     EventArgType: 'static,
+    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)>,
 {
     my_event_responses: HashMap<EventType, EitherConsumer<EventArgType, EventReturnType>>,
-    my_fired_off: Arc<Mutex<Vec<(WhichEvent, EventType, EventArgType)>>>,
+    my_fired_off: Arc<Mutex<MapStore>>,
     backlog: Vec<(WhichEvent, EventType, EventArgType)>,
     num_emitted_before: WhichEvent,
     arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
@@ -36,11 +38,12 @@ where
     panicked_events: Vec<(WhichEvent, EventType, EventArgType, Box<dyn Any + Send>)>,
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep> Drop
-    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore> Drop
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
     EventReturnType: Send + Sync,
+    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)>,
 {
     /// when we attempt to drop this struct, we give warnings for the potential
     /// unintended behavior, but it is not a panic to do so anyway
@@ -56,11 +59,12 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
-    TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
+    TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
     EventReturnType: Send + Sync,
+    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)>,
 {
     /// can provide a channel to send output information on and how to transform the information
     /// before it goes out on that channel
@@ -76,7 +80,7 @@ where
             HashMap::new();
         Self {
             my_event_responses,
-            my_fired_off: Arc::new(Mutex::new(Vec::new())),
+            my_fired_off: Arc::new(Mutex::new(JunkMap::<_, _>::new())),
             backlog: Vec::new(),
             num_emitted_before: 0,
             arg_transformer_out,
@@ -87,14 +91,15 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
     GeneralEmitter<EventType, EventArgType, EventReturnType>
-    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone + Send + 'static,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
+    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy) {
         self.panic_policy = panic_policy;
@@ -131,24 +136,13 @@ where
         when nothing has changed wait for d time
         in order to give the running threads a bit more time to finish
         */
-        let mut finished_nums: Vec<usize> = self
-            .my_fired_off
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(a, _, _)| *a)
-            .collect();
+        let mut running_nums: Vec<usize> =
+            self.my_fired_off.lock().unwrap().map_values(|(a, _, _)| *a);
         loop {
             println!("Going Around");
-            let new_finished_nums = self
-                .my_fired_off
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(a, _, _)| *a)
-                .collect();
-            let something_finished = new_finished_nums != finished_nums;
-            finished_nums = new_finished_nums;
+            let new_running_nums = self.my_fired_off.lock().unwrap().map_values(|(a, _, _)| *a);
+            let something_finished = new_running_nums != running_nums;
+            running_nums = new_running_nums;
             if self.is_empty() {
                 break;
             }
@@ -157,7 +151,7 @@ where
                 let something_out_of_backlog = self.clear_backlog();
                 let not_keyword = if something_out_of_backlog { "" } else { "not " };
                 info!("Something finished, but not everything. An item did {}come out of the backlog. Going through the wait again", not_keyword);
-            } else if finished_nums.is_empty() {
+            } else if running_nums.is_empty() {
                 println!("Finished was empty");
                 let something_out_of_backlog = self.clear_backlog();
                 let not_keyword = if something_out_of_backlog { "" } else { "not " };
@@ -193,14 +187,15 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
     SyncEmitter<EventType, EventArgType, EventReturnType>
-    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone + Send + 'static,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
+    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     fn on_sync(
         &mut self,
@@ -222,14 +217,15 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
     AsyncEmitter<EventType, EventArgType, EventReturnType>
-    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    for TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone + Send + 'static,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
+    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     #[allow(dead_code)]
     fn on_async(
@@ -252,13 +248,14 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
-    TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
+    TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Clone + Send + Interleaves<EventArgType> + 'static,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
+    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     /// is an event of this type somewhere in the backlog
     fn backlog_uses_this(&self, event: &EventType) -> bool {
@@ -280,7 +277,6 @@ where
                 self.my_fired_off
                     .lock()
                     .unwrap()
-                    .iter()
                     .any(|(full_pos, event_type, arg_type)| {
                         *full_pos < *cur_backlog_pos
                             && !cur_back_log_event.do_interleave(
@@ -335,21 +331,13 @@ where
             return true;
         }
 
-        let need_to_wait_for_spawned = self
-            .my_fired_off
-            .lock()
-            .unwrap()
-            .iter()
-            .enumerate()
-            .filter_map(|(pos_in_spawned, (full_pos, event_type, arg_type))| {
-                if !event_type.do_interleave(arg_type, event, arg) {
-                    Some((pos_in_spawned, *full_pos))
-                } else {
-                    None
-                }
-            })
-            .next()
-            .is_some();
+        let need_to_wait_for_spawned =
+            self.my_fired_off
+                .lock()
+                .unwrap()
+                .any(|(_full_pos, event_type, arg_type)| {
+                    !event_type.do_interleave(arg_type, event, arg)
+                });
 
         need_to_wait_for_backlog || need_to_wait_for_spawned
     }
@@ -398,10 +386,11 @@ where
             let arg_clone = arg.clone();
             let event_clone = event.clone();
             let running_vec = Arc::clone(&self.my_fired_off);
-            self.my_fired_off
+            let where_actually_inserted = self
+                .my_fired_off
                 .lock()
                 .unwrap()
-                .push((absolute_pos, event.clone(), arg.clone()));
+                .insert(absolute_pos, (absolute_pos, event.clone(), arg.clone()));
             let where_to_send = self.results_out.clone();
             let arg_transformer_out = self.arg_transformer_out;
             match to_do {
@@ -409,22 +398,21 @@ where
                     let to_do_fun = *temp_to_do;
                     tokio::spawn(async move {
                         let real_ret_val = to_do_fun(arg_clone.clone());
-                        let mut running_vec_guard = running_vec.lock().unwrap();
-                        let idx_in_running = running_vec_guard
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (a, b, _))| *a == absolute_pos && *b == event_clone)
-                            .map(|(idx, (_, _, _))| idx);
-                        if let Some(idx_to_remove) = idx_in_running {
-                            running_vec_guard.remove(idx_to_remove);
-                        }
-                        drop(running_vec_guard);
                         if let Some(ch) = where_to_send {
                             let event_arg_fixed = (arg_transformer_out)(arg_clone);
                             let sending_status =
                                 ch.send((absolute_pos, event, event_arg_fixed, real_ret_val));
                             assert!(sending_status.is_ok(), "Couldn't send on the channel");
                         }
+                        let mut running_guard = running_vec.lock().unwrap();
+                        let idx_in_running = running_guard
+                            .find(&[where_actually_inserted], |(a, b, _)| {
+                                *a == absolute_pos && *b == event_clone
+                            });
+                        if let Some(idx_to_remove) = idx_in_running {
+                            running_guard.remove(&idx_to_remove);
+                        }
+                        drop(running_guard);
                     });
                     (true, true)
                 }
@@ -433,22 +421,21 @@ where
                     let fut_ret_val = temp_to_do_func(arg_clone.clone());
                     tokio::spawn(async move {
                         let real_ret_val = fut_ret_val.into_future().await;
-                        let mut running_vec_guard = running_vec.lock().unwrap();
-                        let idx_in_running = running_vec_guard
-                            .iter()
-                            .enumerate()
-                            .find(|(_, (a, b, _))| *a == absolute_pos && *b == event_clone)
-                            .map(|(idx, (_, _, _))| idx);
-                        if let Some(idx_to_remove) = idx_in_running {
-                            running_vec_guard.remove(idx_to_remove);
-                        }
-                        drop(running_vec_guard);
                         if let Some(ch) = where_to_send {
                             let event_arg_fixed = (arg_transformer_out)(arg_clone);
                             let sending_status =
                                 ch.send((absolute_pos, event, event_arg_fixed, real_ret_val));
                             assert!(sending_status.is_ok(), "Couldn't send on the channel");
                         }
+                        let mut running_guard = running_vec.lock().unwrap();
+                        let idx_in_running = running_guard
+                            .find(&[where_actually_inserted], |(a, b, _)| {
+                                *a == absolute_pos && *b == event_clone
+                            });
+                        if let Some(idx_to_remove) = idx_in_running {
+                            running_guard.remove(&idx_to_remove);
+                        }
+                        drop(running_guard);
                     });
                     (true, true)
                 }
@@ -462,6 +449,15 @@ where
         }
     }
 }
+
+pub type SpecificTokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep> =
+    TokioEmitter<
+        EventType,
+        EventArgType,
+        EventReturnType,
+        EventArgTypeKeep,
+        HashMap<usize, (WhichEvent, EventType, EventArgType)>,
+    >;
 
 mod test {
     use crate::general_emitter::PanicPolicy;
@@ -505,12 +501,13 @@ mod test {
     fn two_events_helper() {
         use std::{sync::mpsc, thread, time::Duration};
 
-        use super::{GeneralEmitter, SyncEmitter, TokioEmitter};
+        use super::{GeneralEmitter, SpecificTokioEmitter, SyncEmitter};
         use crate::assert_ok_equal;
 
         let (tx, rx) = mpsc::channel();
         let identity = |x| x;
-        let mut emitter: TokioEmitter<ABTemp, u64, (), _> = TokioEmitter::new(Some(tx), identity);
+        let mut emitter: SpecificTokioEmitter<ABTemp, u64, (), _> =
+            SpecificTokioEmitter::new(Some(tx), identity);
 
         async fn sleeper(wait_time: u64, multiplier: u64) {
             let _ = tokio::time::sleep(Duration::from_millis(wait_time * multiplier)).await;
@@ -607,7 +604,7 @@ mod test {
 
     #[allow(dead_code)]
     fn common_resource_helper(policy: PanicPolicy) {
-        use super::{GeneralEmitter, SyncEmitter, TokioEmitter};
+        use super::{GeneralEmitter, SpecificTokioEmitter, SyncEmitter};
         use crate::assert_ok_equal;
         use std::{
             cmp::max,
@@ -631,8 +628,8 @@ mod test {
         type MyArgType = (i32, u64, Arc<Mutex<i32>>);
         let dont_show_common_resource = |(_0, _1, _2)| (_0, _1);
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut emitter: TokioEmitter<ABTemp, MyArgType, (), (i32, u64)> =
-            TokioEmitter::new(Some(tx), dont_show_common_resource);
+        let mut emitter: SpecificTokioEmitter<ABTemp, MyArgType, (), (i32, u64)> =
+            SpecificTokioEmitter::new(Some(tx), dont_show_common_resource);
         emitter.reset_panic_policy(policy.clone());
         let true_new = emitter.on_sync(ABTemp(true), a);
         assert_ok_equal!(true_new, true, "Should be no problem turning on");

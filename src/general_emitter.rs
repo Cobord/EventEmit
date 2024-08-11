@@ -16,18 +16,18 @@ pub struct AsyncConsumer<EventArgType: 'static, EventReturnType: 'static> {
 }
 
 impl<EventArgType: 'static, EventReturnType: 'static> AsyncConsumer<EventArgType, EventReturnType> {
-    #[allow(dead_code)]
-    pub fn new<F>(my_func: F) -> Self
+    #[allow(dead_code, unreachable_code)]
+    pub fn new<F>(_my_func: F) -> Self
     where
-        F : Fn(EventArgType) -> dyn Future<Output = EventReturnType>,
-        EventArgType : 'static,
-        EventReturnType : 'static + Send
+        F: Fn(EventArgType) -> dyn Future<Output = EventReturnType>,
+        EventArgType: 'static,
+        EventReturnType: 'static + Send,
     {
         Self {
             my_func: todo!(),
             dummy_arg: PhantomData,
             dummy_ret: PhantomData,
-        }        
+        }
     }
 }
 

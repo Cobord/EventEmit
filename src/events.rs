@@ -11,19 +11,24 @@ use crate::general_emitter::{
     Consumer, EmitterError, GeneralEmitter, PanicPolicy, SyncEmitter, WhichEvent,
 };
 use crate::interleaving::Interleaves;
+use crate::utils::JunkMap;
 
 /// using thread::spawn for the running Consumers
-pub struct Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+pub struct ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
+    MapStore: JunkMap<
+        usize,
+        (
+            WhichEvent,
+            EventType,
+            EventArgType,
+            JoinHandle<EventReturnType>,
+        ),
+    >,
 {
     my_event_responses: HashMap<EventType, Consumer<EventArgType, EventReturnType>>,
-    my_fired_off: Vec<(
-        WhichEvent,
-        EventType,
-        EventArgType,
-        JoinHandle<EventReturnType>,
-    )>,
+    my_fired_off: MapStore,
     backlog: Vec<(WhichEvent, EventType, EventArgType)>,
     num_emitted_before: WhichEvent,
     arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
@@ -32,10 +37,19 @@ where
     panicked_events: Vec<(WhichEvent, EventType, EventArgType, Box<dyn Any + Send>)>,
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep> Drop
-    for Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore> Drop
+    for ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
+    MapStore: JunkMap<
+        usize,
+        (
+            WhichEvent,
+            EventType,
+            EventArgType,
+            JoinHandle<EventReturnType>,
+        ),
+    >,
 {
     /// when we attempt to drop this struct, we give warnings for the potential
     /// unintended behavior, but it is not a panic to do so anyway
@@ -51,10 +65,19 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
-    Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
+    ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
+    MapStore: JunkMap<
+        usize,
+        (
+            WhichEvent,
+            EventType,
+            EventArgType,
+            JoinHandle<EventReturnType>,
+        ),
+    >,
 {
     /// can provide a channel to send output information on and how to transform the information
     /// before it goes out on that channel
@@ -69,7 +92,7 @@ where
             HashMap::new();
         Self {
             my_event_responses,
-            my_fired_off: Vec::new(),
+            my_fired_off: MapStore::new(),
             backlog: Vec::new(),
             num_emitted_before: 0,
             arg_transformer_out,
@@ -80,13 +103,22 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
     GeneralEmitter<EventType, EventArgType, EventReturnType>
-    for Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    for ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
+    MapStore: JunkMap<
+        usize,
+        (
+            WhichEvent,
+            EventType,
+            EventArgType,
+            JoinHandle<EventReturnType>,
+        ),
+    >,
 {
     fn all_keys(&self) -> impl Iterator<Item = EventType> + '_ {
         self.my_event_responses.keys().cloned()
@@ -165,13 +197,22 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
     SyncEmitter<EventType, EventArgType, EventReturnType>
-    for Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+    for ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
+    MapStore: JunkMap<
+        usize,
+        (
+            WhichEvent,
+            EventType,
+            EventArgType,
+            JoinHandle<EventReturnType>,
+        ),
+    >,
 {
     fn on_sync(
         &mut self,
@@ -193,12 +234,21 @@ where
     }
 }
 
-impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
-    Emitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep>
+impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
+    ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Interleaves<EventArgType>,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
+    MapStore: JunkMap<
+        usize,
+        (
+            WhichEvent,
+            EventType,
+            EventArgType,
+            JoinHandle<EventReturnType>,
+        ),
+    >,
 {
     /// for everything in the backlog if it is ready to go based on interleaving with everything
     /// that was emitted earlier both that are running and also in the backlog
@@ -211,10 +261,9 @@ where
         let mut ready_to_go = Vec::with_capacity(self.backlog.len() >> 2);
         for (cur_idx, cur_backlog) in self.backlog.iter().enumerate() {
             let (cur_backlog_pos, cur_back_log_event, cur_back_log_arg) = cur_backlog;
-            let mut still_running_and_dependent =
+            let running_next =
                 self.my_fired_off
-                    .iter()
-                    .filter(|(full_pos, event_type, arg_type, _)| {
+                    .find(&[], |(full_pos, event_type, arg_type, _)| {
                         *full_pos < *cur_backlog_pos
                             && !cur_back_log_event.do_interleave(
                                 cur_back_log_arg,
@@ -233,7 +282,6 @@ where
                                 arg_type,
                             )
                     });
-            let running_next = still_running_and_dependent.next();
             let backlog_next = backlog_and_dependent.next();
             let none_dependent = running_next.is_none() && backlog_next.is_none();
             if none_dependent {
@@ -253,17 +301,17 @@ where
     /// send their outputs on the channel if applicable
     /// if they panicked, do the appropriate response based on the PanicPolicy
     fn clear_finished(&mut self) -> bool {
-        let mut to_remove = Vec::with_capacity(self.my_fired_off.len() >> 3);
-        for (idx, (_, _, _, handle)) in self.my_fired_off.iter().enumerate() {
-            if handle.is_finished() {
-                to_remove.push(idx);
-            }
-        }
+        let mut to_remove = self
+            .my_fired_off
+            .find_all(|(_, _, _, handle)| handle.is_finished());
         let something_finished = !to_remove.is_empty();
         to_remove.sort();
         to_remove.reverse();
         for idx in to_remove {
-            let (absolute_pos, event_in, event_arg, done_handle) = self.my_fired_off.remove(idx);
+            let (absolute_pos, event_in, event_arg, done_handle) = self
+                .my_fired_off
+                .remove(&idx)
+                .expect("Already know it is present");
             let join_res = done_handle.join();
             if let Ok(real_ret_val) = join_res {
                 if let Some(ch) = &self.results_out {
@@ -319,18 +367,7 @@ where
 
         let need_to_wait_for_spawned = self
             .my_fired_off
-            .iter()
-            .enumerate()
-            .filter_map(|(pos_in_spawned, (full_pos, event_type, arg_type, _))| {
-                if !event_type.do_interleave(arg_type, event, arg) {
-                    Some((pos_in_spawned, *full_pos))
-                } else {
-                    None
-                }
-            })
-            .next()
-            .is_some();
-
+            .any(|(_, event_type, arg_type, _)| !event_type.do_interleave(arg_type, event, arg));
         need_to_wait_for_backlog || need_to_wait_for_spawned
     }
 
@@ -382,8 +419,10 @@ where
             thread::spawn(move || to_do_fun(arg_clone))
         });
         if let Some(real_handle) = my_handle {
-            self.my_fired_off
-                .push((absolute_pos, event, arg, real_handle));
+            let last_idx = self.my_fired_off.len();
+            let _ = self
+                .my_fired_off
+                .insert(last_idx, (absolute_pos, event, arg, real_handle));
             (true, true)
         } else {
             (false, false)
@@ -395,6 +434,23 @@ where
         self.backlog.iter().any(|z| z.1 == *event)
     }
 }
+
+pub type SpecificThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep> =
+    ThreadEmitter<
+        EventType,
+        EventArgType,
+        EventReturnType,
+        EventArgTypeKeep,
+        HashMap<
+            usize,
+            (
+                WhichEvent,
+                EventType,
+                EventArgType,
+                JoinHandle<EventReturnType>,
+            ),
+        >,
+    >;
 
 mod test {
     use crate::general_emitter::PanicPolicy;
@@ -424,12 +480,13 @@ mod test {
     fn two_events() {
         use std::{sync::mpsc, thread, time::Duration};
 
-        use super::{Emitter, GeneralEmitter, SyncEmitter};
+        use super::{GeneralEmitter, SpecificThreadEmitter, SyncEmitter};
         use crate::assert_ok_equal;
 
         let (tx, rx) = mpsc::channel();
         let identity = |x| x;
-        let mut emitter: Emitter<ABTemp, u64, (), _> = Emitter::new(Some(tx), identity);
+        let mut emitter: SpecificThreadEmitter<ABTemp, u64, (), _> =
+            SpecificThreadEmitter::new(Some(tx), identity);
         let true_new = emitter.on_sync(ABTemp(true), |wait_time| {
             thread::sleep(Duration::from_millis(wait_time * 100));
         });
@@ -509,7 +566,7 @@ mod test {
 
     #[allow(dead_code)]
     fn common_resource_helper(policy: PanicPolicy) {
-        use super::{Emitter, GeneralEmitter, SyncEmitter};
+        use super::{GeneralEmitter, SpecificThreadEmitter, SyncEmitter};
         use crate::assert_ok_equal;
         use std::{
             cmp::max,
@@ -532,8 +589,8 @@ mod test {
 
         type MyArgType = (i32, u64, Arc<Mutex<i32>>);
         let dont_show_common_resource = |(_0, _1, _2)| (_0, _1);
-        let mut emitter: Emitter<ABTemp, MyArgType, (), (i32, u64)> =
-            Emitter::new(None, dont_show_common_resource);
+        let mut emitter: SpecificThreadEmitter<ABTemp, MyArgType, (), (i32, u64)> =
+            SpecificThreadEmitter::new(None, dont_show_common_resource);
         emitter.reset_panic_policy(policy.clone());
         let true_new = emitter.on_sync(ABTemp(true), a);
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
