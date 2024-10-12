@@ -56,32 +56,27 @@ where
         look_here_first: &[KeyType],
         predicate: impl Fn(&ValueType) -> bool,
     ) -> Option<KeyType> {
-        let in_look_here_first = look_here_first
-            .iter()
-            .filter_map(|key| {
-                if let Some(value_found) = self.get(key) {
-                    if predicate(value_found) {
-                        Some(key.clone())
-                    } else {
-                        None
-                    }
+        let in_look_here_first = look_here_first.iter().find_map(|key| {
+            if let Some(value_found) = self.get(key) {
+                if predicate(value_found) {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        if let Some(found_early) = in_look_here_first {
+            Some(found_early)
+        } else {
+            self.iter().find_map(|(key, value)| {
+                if predicate(value) {
+                    Some(key.clone())
                 } else {
                     None
                 }
             })
-            .next();
-        if let Some(found_early) = in_look_here_first {
-            Some(found_early)
-        } else {
-            self.iter()
-                .filter_map(|(key, value)| {
-                    if predicate(value) {
-                        Some(key.clone())
-                    } else {
-                        None
-                    }
-                })
-                .next()
         }
     }
 
@@ -106,6 +101,7 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
     }
 
     fn is_empty(&self) -> bool {
+        #[allow(clippy::redundant_closure_for_method_calls)]
         self.iter().all(|v| v.is_none())
     }
 
@@ -146,12 +142,24 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
         look_here_first: &[usize],
         predicate: impl Fn(&ValueType) -> bool,
     ) -> Option<usize> {
-        let in_look_here_first = look_here_first
-            .iter()
-            .filter_map(|key| {
-                if let Some(value_found) = &self[*key] {
-                    if predicate(value_found) {
-                        Some(*key)
+        let in_look_here_first = look_here_first.iter().find_map(|key| {
+            if let Some(value_found) = &self[*key] {
+                if predicate(value_found) {
+                    Some(*key)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        if let Some(found_early) = in_look_here_first {
+            Some(found_early)
+        } else {
+            self.iter().enumerate().find_map(|(idx, value)| {
+                if let Some(real_value) = value {
+                    if predicate(real_value) {
+                        Some(idx)
                     } else {
                         None
                     }
@@ -159,24 +167,6 @@ impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
                     None
                 }
             })
-            .next();
-        if let Some(found_early) = in_look_here_first {
-            Some(found_early)
-        } else {
-            self.iter()
-                .enumerate()
-                .filter_map(|(idx, value)| {
-                    if let Some(real_value) = value {
-                        if predicate(real_value) {
-                            Some(idx)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .next()
         }
     }
 

@@ -13,7 +13,7 @@ use crate::general_emitter::{
 use crate::interleaving::Interleaves;
 use crate::utils::JunkMap;
 
-/// using thread::spawn for the running Consumers
+/// using `thread::spawn` for the running `Consumer`s
 pub struct ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
@@ -272,7 +272,7 @@ where
     /// that was emitted earlier both that are running and also in the backlog
     /// those get pulled out of the backlog and are started running
     /// the return value is if anything did get out of the backlog
-    /// when the return value is false, then we should be giving the running Consumers
+    /// when the return value is false, then we should be giving the running `Consumer`s
     /// some more time to finish because everything in the backlog was dependent on them either
     /// directly or indirectly
     fn clear_backlog(&mut self) -> bool {
@@ -315,16 +315,16 @@ where
         something_out_of_backlog
     }
 
-    /// remove the finished JoinHandles
+    /// remove the finished `JoinHandles`
     /// send their outputs on the channel if applicable
-    /// if they panicked, do the appropriate response based on the PanicPolicy
+    /// if they panicked, do the appropriate response based on the `PanicPolicy`
     fn clear_finished(&mut self) -> (bool, usize) {
         let mut to_remove = self
             .my_fired_off
             .find_all(|(_, _, _, handle)| handle.is_finished());
         let something_finished = !to_remove.is_empty();
         let count_finished = to_remove.len();
-        to_remove.sort();
+        to_remove.sort_unstable();
         to_remove.reverse();
         for idx in to_remove {
             let (absolute_pos, event_in, event_arg, done_handle) = self
@@ -342,7 +342,7 @@ where
             } else if let Err(msg) = join_res {
                 // how to do recovery, do later dependent tasks care about this panic?
                 match self.panic_policy {
-                    PanicPolicy::PanicAgain => panic!("Task {:?} panicked", absolute_pos),
+                    PanicPolicy::PanicAgain => panic!("Task {absolute_pos:?} panicked"),
                     PanicPolicy::StoreButNoSubsequentProblem => {
                         warn!("Task {:?} panicked, but can proceed normally", absolute_pos);
                         self.panicked_events
@@ -370,14 +370,13 @@ where
             .backlog
             .iter()
             .enumerate()
-            .filter_map(|(pos_in_backlog, (full_pos, event_type, event_arg))| {
-                if !event_type.do_interleave(event_arg, event, arg) {
-                    Some((pos_in_backlog, *full_pos))
-                } else {
+            .find_map(|(pos_in_backlog, (full_pos, event_type, event_arg))| {
+                if event_type.do_interleave(event_arg, event, arg) {
                     None
+                } else {
+                    Some((pos_in_backlog, *full_pos))
                 }
             })
-            .next()
             .is_some();
 
         if need_to_wait_for_backlog {
@@ -404,6 +403,7 @@ where
     {
         let looked_up = self.my_event_responses.get(&event);
         if looked_up.is_some() {
+            #[allow(clippy::match_same_arms)]
             match self.panic_policy {
                 PanicPolicy::PanicAgain => {
                     /*
@@ -416,8 +416,7 @@ where
                     */
                 }
                 PanicPolicy::StoreButSubsequentProblem => {
-                    for (event_num, bad_event_type, bad_event_arg, _) in self.panicked_events.iter()
-                    {
+                    for (event_num, bad_event_type, bad_event_arg, _) in &self.panicked_events {
                         let is_going_to_be_bad = *event_num < absolute_pos
                             && !bad_event_type.do_interleave(bad_event_arg, &event, &arg);
                         if is_going_to_be_bad {
@@ -558,8 +557,9 @@ mod test {
         assert!(!exists && !spawned && !spawn_later);
 
         emitter.wait_for_all(Duration::from_millis(250));
-        let expected_order = vec![1, 0, 2];
+        let expected_order = [1, 0, 2];
 
+        #[allow(clippy::unit_cmp)]
         for (received_order, v) in rx.iter().enumerate().take(total_emissions) {
             let which_item = expected_order[received_order];
             let expected = &expected_emissions[which_item];
@@ -606,11 +606,12 @@ mod test {
             *data *= other_operand;
         };
 
+        #[allow(clippy::items_after_statements)]
         type MyArgType = (i32, u64, Arc<Mutex<i32>>);
-        let dont_show_common_resource = |(_0, _1, _2)| (_0, _1);
+        let dont_show_common_resource = |(a_0, a_1, _2)| (a_0, a_1);
         let mut emitter: SpecificThreadEmitter<ABTemp, MyArgType, (), (i32, u64)> =
             SpecificThreadEmitter::new(None, dont_show_common_resource);
-        emitter.reset_panic_policy(policy.clone());
+        emitter.reset_panic_policy(policy);
         let true_new = emitter.on_sync(ABTemp(true), a);
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
         let false_new = emitter.on_sync(ABTemp(false), b);

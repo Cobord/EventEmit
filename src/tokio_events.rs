@@ -20,7 +20,7 @@ use crate::general_emitter::{
 use crate::interleaving::Interleaves;
 use crate::utils::JunkMap;
 
-/// using tokio::spawn
+/// using `tokio::spawn`
 pub struct TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
@@ -349,14 +349,13 @@ where
             .backlog
             .iter()
             .enumerate()
-            .filter_map(|(pos_in_spawned, (full_pos, event_type, event_arg))| {
-                if !event_type.do_interleave(event_arg, event, arg) {
-                    Some((pos_in_spawned, *full_pos))
-                } else {
+            .find_map(|(pos_in_spawned, (full_pos, event_type, event_arg))| {
+                if event_type.do_interleave(event_arg, event, arg) {
                     None
+                } else {
+                    Some((pos_in_spawned, *full_pos))
                 }
             })
-            .next()
             .is_some();
 
         if need_to_wait_for_backlog {
@@ -386,6 +385,7 @@ where
     ) -> (bool, bool) {
         let looked_up = self.my_event_responses.get(&event);
         if looked_up.is_some() {
+            #[allow(clippy::match_same_arms)]
             match self.panic_policy {
                 PanicPolicy::PanicAgain => {
                     /*
@@ -398,8 +398,7 @@ where
                     */
                 }
                 PanicPolicy::StoreButSubsequentProblem => {
-                    for (event_num, bad_event_type, bad_event_arg, _) in self.panicked_events.iter()
-                    {
+                    for (event_num, bad_event_type, bad_event_arg, _) in &self.panicked_events {
                         let is_going_to_be_bad = *event_num < absolute_pos
                             && !bad_event_type.do_interleave(bad_event_arg, &event, &arg);
                         if is_going_to_be_bad {
@@ -473,7 +472,7 @@ where
                 }
             }
         });
-        #[allow(clippy::manual_unwrap_or_default)]
+        #[allow(clippy::manual_unwrap_or_default, clippy::manual_unwrap_or)]
         if let Some(real_return) = my_return {
             real_return
         } else {
@@ -541,9 +540,11 @@ mod test {
         let mut emitter: SpecificTokioEmitter<ABTemp, u64, (), _> =
             SpecificTokioEmitter::new(Some(tx), identity);
 
+        #[allow(clippy::items_after_statements)]
         async fn sleeper(wait_time: u64, multiplier: u64) {
-            let _ = tokio::time::sleep(Duration::from_millis(wait_time * multiplier)).await;
+            let () = tokio::time::sleep(Duration::from_millis(wait_time * multiplier)).await;
         }
+        #[allow(clippy::items_after_statements)]
         fn blocking_sleeper(wait_time: u64, multiplier: u64) {
             thread::sleep(Duration::from_millis(wait_time * multiplier));
         }
@@ -635,6 +636,7 @@ mod test {
     }
 
     #[allow(dead_code)]
+    #[allow(clippy::too_many_lines)]
     fn common_resource_helper(policy: PanicPolicy) {
         use super::{GeneralEmitter, SpecificTokioEmitter, SyncEmitter};
         use crate::assert_ok_equal;
@@ -657,12 +659,13 @@ mod test {
             *data *= other_operand;
         };
 
+        #[allow(clippy::items_after_statements)]
         type MyArgType = (i32, u64, Arc<Mutex<i32>>);
-        let dont_show_common_resource = |(_0, _1, _2)| (_0, _1);
+        let dont_show_common_resource = |(a_0, a_1, _2)| (a_0, a_1);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut emitter: SpecificTokioEmitter<ABTemp, MyArgType, (), (i32, u64)> =
             SpecificTokioEmitter::new(Some(tx), dont_show_common_resource);
-        emitter.reset_panic_policy(policy.clone());
+        emitter.reset_panic_policy(policy);
         let true_new = emitter.on_sync(ABTemp(true), a);
         assert_ok_equal!(true_new, true, "Should be no problem turning on");
         let false_new = emitter.on_sync(ABTemp(false), b);

@@ -54,6 +54,7 @@ fn common_resource_1() {
     };
 
     let identity = |x| x;
+    #[allow(clippy::items_after_statements)]
     type MyArgType = (i32, u64, Arc<Mutex<i32>>);
     let mut emitter: SpecificThreadEmitter<AB, MyArgType, (), _> =
         SpecificThreadEmitter::new(None, identity);
@@ -132,6 +133,7 @@ fn common_resource_2() {
     }
 
     let identity = |x| x;
+    #[allow(clippy::items_after_statements)]
     type MyArgType = (i32, u64, Arc<Mutex<i32>>);
     let (tx, rx) = mpsc::channel();
     let mut emitter: SpecificTokioEmitter<AB, MyArgType, (), _> =
@@ -222,7 +224,7 @@ fn common_resource_2() {
     let final_wait = Duration::new(1, 0);
     let next_item = rx
         .recv_timeout(final_wait)
-        .map(|(a, b, c, _)| (a, b, c.0, c.1));
+        .map(|(a, b, c, ())| (a, b, c.0, c.1));
     assert_eq!(next_item, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
 }
 
@@ -310,8 +312,7 @@ fn main_part1() {
     }
     let final_wait = Duration::new(5, 0);
     println!(
-        "Waiting for at most {:?} to make sure nothing comes down the channel after wait for all",
-        final_wait
+        "Waiting for at most {final_wait:?} to make sure nothing comes down the channel after wait for all"
     );
 
     let next_item = rx.recv_timeout(final_wait);

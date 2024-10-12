@@ -96,7 +96,7 @@ where
     >,
 {
     fn reset_panic_policy(&mut self, panic_policy: crate::general_emitter::PanicPolicy) {
-        self.emitter.reset_panic_policy(panic_policy)
+        self.emitter.reset_panic_policy(panic_policy);
     }
 
     fn all_keys(&self) -> impl Iterator<Item = EventType> + '_ {
@@ -119,6 +119,7 @@ where
         self.emitter.off(event)
     }
 
+    #[allow(clippy::many_single_char_names)]
     fn wait_for_any(&mut self, d: std::time::Duration) -> (bool, Option<usize>) {
         let (something_finished, count_finished) = self.emitter.wait_for_any(d);
         if let Some(did_count) = count_finished {
@@ -147,6 +148,7 @@ where
         (something_finished, count_finished)
     }
 
+    #[allow(clippy::many_single_char_names)]
     fn wait_for_all(&mut self, d: std::time::Duration) {
         loop {
             let received_on_channel = self.receiver.try_recv();

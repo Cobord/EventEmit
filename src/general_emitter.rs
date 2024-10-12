@@ -44,7 +44,7 @@ pub type EmitterError = String;
 /// store it and anything that depended on that task executing correctly first
 ///     will also fail so treat them as having panicked too
 #[allow(dead_code)]
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum PanicPolicy {
     PanicAgain,
     StoreButNoSubsequentProblem,
@@ -58,7 +58,7 @@ where
     /// change how we react to panics
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy);
 
-    /// all the EventType's that have a Consumer to run when we call emit with them
+    /// all the `EventType`'s that have a `Consumer` to run when we call emit with them
     fn all_keys(&self) -> impl Iterator<Item = EventType> + '_;
 
     /// there are no events running or waiting to be run
@@ -71,17 +71,18 @@ where
     /// before them that is either running but not finished or is also waiting
     fn count_waiting(&self) -> usize;
 
-    /// we can completely remove the ability to run a Consumer upon this event
+    /// we can completely remove the ability to run a `Consumer` upon this event
     /// as with on, there can't be anything waiting of this particular event
-    /// they expected the Consumer that was associated with it at the time of emission
+    /// they expected the `Consumer` that was associated with it at the time of emission
     /// removing that association now would destroy that capability
     fn off(&mut self, event: EventType) -> Result<bool, EmitterError>;
 
     /// turn as many as possible off
-    /// if there were things in the backlog that gave EmitterErrors when trying to turn
+    /// if there were things in the backlog that gave `EmitterError`s when trying to turn
     ///     any of them off, then they remain
     /// return if all of them were successfully turned off
     #[allow(dead_code)]
+    #[allow(clippy::needless_for_each)]
     fn all_off(&mut self) -> bool
     where
         EventType: Clone,
@@ -108,16 +109,17 @@ where
     /// in order to give the running a bit more time to finish
     fn wait_for_any(&mut self, d: Duration) -> (bool, Option<usize>);
 
-    /// either the start the associated Consumer running
+    /// either the start the associated `Consumer` running
     /// - or put it in the backlog
-    /// - or if it is sure to panic according to PanicPolicy, don't store that
+    /// - or if it is sure to panic according to `PanicPolicy`, don't store that
     ///     it would do so
+    ///
     /// returns
-    ///     whether there was an associated Consumer for this event
-    ///     will the execution of that Consumer get spawned later
-    ///     has the execution of that Consumer spawned already, without any need for waiting
+    ///     whether there was an associated `Consumer` for this event
+    ///     will the execution of that `Consumer` get spawned later
+    ///     has the execution of that `Consumer` spawned already, without any need for waiting
     /// last two are mutually exclusive
-    /// if there is no Consumer, both of the others are false but also meaningless
+    /// if there is no `Consumer`, both of the others are false but also meaningless
     fn emit(&mut self, event: EventType, arg: EventArgType) -> (bool, bool, bool);
 }
 
@@ -126,10 +128,10 @@ pub trait SyncEmitter<EventType, EventArgType, EventReturnType>:
 where
     EventType: Eq + Interleaves<EventArgType>,
 {
-    /// set what to run when we emit a particular EventType
+    /// set what to run when we emit a particular `EventType`
     /// there can't be anything waiting of this particular event
-    /// because the Consumer that was associated with it at the time
-    /// is what we presumably intended to run, rather than this new Consumer
+    /// because the `Consumer` that was associated with it at the time
+    /// is what we presumably intended to run, rather than this new `Consumer`
     /// if none of the events in process use this event, then we can reset it
     fn on_sync(
         &mut self,
@@ -143,10 +145,10 @@ pub trait AsyncEmitter<EventType, EventArgType, EventReturnType>:
 where
     EventType: Eq + Interleaves<EventArgType>,
 {
-    /// set what to run when we emit a particular EventType
+    /// set what to run when we emit a particular `EventType`
     /// there can't be anything waiting of this particular event
     /// because the Consumer that was associated with it at the time
-    /// is what we presumably intended to run, rather than this new Consumer
+    /// is what we presumably intended to run, rather than this new `Consumer`
     /// if none of the events in process use this event, then we can reset it
     #[allow(dead_code)]
     fn on_async(
