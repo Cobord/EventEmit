@@ -3,7 +3,7 @@ use std::hash::Hash;
 
 pub trait JunkMap<KeyType, ValueType>
 where
-    KeyType: Eq + Hash + Into<usize>,
+    KeyType: Eq + Hash,
 {
     fn new() -> Self;
     fn is_empty(&self) -> bool;
@@ -22,7 +22,7 @@ where
 
 impl<KeyType, ValueType> JunkMap<KeyType, ValueType> for HashMap<KeyType, ValueType>
 where
-    KeyType: Eq + Hash + Into<usize> + Clone,
+    KeyType: Eq + Hash + Clone,
 {
     fn new() -> Self {
         HashMap::new()
