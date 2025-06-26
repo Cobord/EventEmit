@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
-pub trait JunkMap<KeyType, ValueType>
+pub trait GeneralMap<KeyType, ValueType>
 where
-    KeyType: Eq + Hash,
+    KeyType: Eq,
 {
     fn new() -> Self;
     fn is_empty(&self) -> bool;
@@ -20,7 +20,7 @@ where
     fn find_all(&self, predicate: impl Fn(&ValueType) -> bool) -> Vec<KeyType>;
 }
 
-impl<KeyType, ValueType> JunkMap<KeyType, ValueType> for HashMap<KeyType, ValueType>
+impl<KeyType, ValueType> GeneralMap<KeyType, ValueType> for HashMap<KeyType, ValueType>
 where
     KeyType: Eq + Hash + Clone,
 {
@@ -95,7 +95,7 @@ where
     }
 }
 
-impl<ValueType> JunkMap<usize, ValueType> for Vec<Option<ValueType>> {
+impl<ValueType> GeneralMap<usize, ValueType> for Vec<Option<ValueType>> {
     fn new() -> Self {
         Vec::new()
     }

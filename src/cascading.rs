@@ -1,7 +1,7 @@
 use crate::events::ThreadEmitter;
 use crate::general_emitter::{GeneralEmitter, WhichEvent};
 use crate::interleaving::Interleaves;
-use crate::utils::JunkMap;
+use crate::utils::GeneralMap;
 use std::hash::Hash;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;
@@ -13,7 +13,7 @@ type CompositeReturn<EventType, EventArgType, EventReturnType> =
 pub struct Cascader<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Clone + Interleaves<EventArgType>,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -44,7 +44,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
     Cascader<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash + Clone + Interleaves<EventArgType>,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -85,7 +85,7 @@ where
     EventType: Eq + Hash + Send + Interleaves<EventArgType> + Clone + 'static,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -99,7 +99,10 @@ where
         self.emitter.reset_panic_policy(panic_policy);
     }
 
-    fn all_keys(&self) -> impl Iterator<Item = EventType> + '_ {
+    fn all_keys<'a>(&'a self) -> impl Iterator<Item = &'a EventType> + 'a
+    where
+        EventType: 'a,
+    {
         self.emitter.all_keys()
     }
 
@@ -123,6 +126,7 @@ where
     fn wait_for_any(&mut self, d: std::time::Duration) -> (bool, Option<usize>) {
         let (something_finished, count_finished) = self.emitter.wait_for_any(d);
         if let Some(did_count) = count_finished {
+            #[allow(clippy::needless_continue)]
             for _ in 0..did_count {
                 let received_on_channel = self.receiver.try_recv();
                 match received_on_channel {

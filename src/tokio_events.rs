@@ -18,7 +18,7 @@ use crate::general_emitter::{
     PanicPolicy, SyncEmitter, WhichEvent,
 };
 use crate::interleaving::Interleaves;
-use crate::utils::JunkMap;
+use crate::utils::GeneralMap;
 
 /// using `tokio::spawn`
 pub struct TokioEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
@@ -26,7 +26,7 @@ where
     EventType: Eq + Hash,
     EventReturnType: 'static + Send + Sync,
     EventArgType: 'static,
-    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)>,
+    MapStore: GeneralMap<usize, (WhichEvent, EventType, EventArgType)>,
 {
     my_event_responses: HashMap<EventType, EitherConsumer<EventArgType, EventReturnType>>,
     my_fired_off: Arc<Mutex<MapStore>>,
@@ -43,7 +43,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore> Drop
 where
     EventType: Eq + Hash,
     EventReturnType: Send + Sync,
-    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)>,
+    MapStore: GeneralMap<usize, (WhichEvent, EventType, EventArgType)>,
 {
     /// when we attempt to drop this struct, we give warnings for the potential
     /// unintended behavior, but it is not a panic to do so anyway
@@ -64,7 +64,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
     EventReturnType: Send + Sync,
-    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)>,
+    MapStore: GeneralMap<usize, (WhichEvent, EventType, EventArgType)>,
 {
     /// can provide a channel to send output information on and how to transform the information
     /// before it goes out on that channel
@@ -80,7 +80,7 @@ where
             HashMap::new();
         Self {
             my_event_responses,
-            my_fired_off: Arc::new(Mutex::new(JunkMap::<_, _>::new())),
+            my_fired_off: Arc::new(Mutex::new(GeneralMap::<_, _>::new())),
             backlog: Vec::new(),
             num_emitted_before: 0,
             arg_transformer_out,
@@ -99,14 +99,17 @@ where
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
-    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
+    MapStore: GeneralMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy) {
         self.panic_policy = panic_policy;
     }
 
-    fn all_keys(&self) -> impl Iterator<Item = EventType> + '_ {
-        self.my_event_responses.keys().cloned()
+    fn all_keys<'a>(&'a self) -> impl Iterator<Item = &'a EventType> + 'a
+    where
+        EventType: 'a,
+    {
+        self.my_event_responses.keys()
     }
 
     fn is_empty(&self) -> bool {
@@ -227,7 +230,7 @@ where
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
-    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
+    MapStore: GeneralMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     fn on_sync(
         &mut self,
@@ -257,7 +260,7 @@ where
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
-    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
+    MapStore: GeneralMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     #[allow(dead_code)]
     fn on_async(
@@ -287,7 +290,7 @@ where
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + Sync + 'static,
     EventArgTypeKeep: Send + 'static,
-    MapStore: JunkMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
+    MapStore: GeneralMap<usize, (WhichEvent, EventType, EventArgType)> + Send + 'static,
 {
     /// is an event of this type somewhere in the backlog
     fn backlog_uses_this(&self, event: &EventType) -> bool {

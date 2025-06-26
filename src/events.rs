@@ -11,13 +11,13 @@ use crate::general_emitter::{
     Consumer, EmitterError, GeneralEmitter, PanicPolicy, SyncEmitter, WhichEvent,
 };
 use crate::interleaving::Interleaves;
-use crate::utils::JunkMap;
+use crate::utils::GeneralMap;
 
-/// using `thread::spawn` for the running `Consumer`s
+/// using [`thread::spawn`] for the running [`Consumer`]s
 pub struct ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -41,7 +41,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore> Drop
     for ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -51,8 +51,9 @@ where
         ),
     >,
 {
-    /// when we attempt to drop this struct, we give warnings for the potential
-    /// unintended behavior, but it is not a panic to do so anyway
+    /// When we attempt to drop this struct, we give warnings for the potential
+    /// unintended behavior of dropping stuff that is running or yet to run.
+    /// But we let you do so anyway.
     fn drop(&mut self) {
         let num_backlog = self.backlog.len();
         if num_backlog > 0 {
@@ -69,7 +70,7 @@ impl<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
     ThreadEmitter<EventType, EventArgType, EventReturnType, EventArgTypeKeep, MapStore>
 where
     EventType: Eq + Hash,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -79,11 +80,16 @@ where
         ),
     >,
 {
-    /// can provide a channel to send output information on and how to transform the information
-    /// before it goes out on that channel
-    /// the other information about what events are being processed and what Consumers are associated with each
-    ///     starts off as empty
-    /// by default panics in a Consumer are propogated up causing a panic of this too
+    /// You can provide a channel to send output information on and how to transform the information
+    /// before it goes out on that channel.
+    ///
+    /// The other information about
+    /// - what events are being processed
+    /// - what [`Consumer`]s are associated with each
+    ///
+    /// both start off as empty
+    ///
+    /// By default panics in a [`Consumer`] are propogated up causing a panic of this too
     pub fn new(
         results_out: Option<Sender<(WhichEvent, EventType, EventArgTypeKeep, EventReturnType)>>,
         arg_transformer_out: fn(EventArgType) -> EventArgTypeKeep,
@@ -110,7 +116,7 @@ where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -120,8 +126,11 @@ where
         ),
     >,
 {
-    fn all_keys(&self) -> impl Iterator<Item = EventType> + '_ {
-        self.my_event_responses.keys().cloned()
+    fn all_keys<'a>(&'a self) -> impl Iterator<Item = &'a EventType> + 'a
+    where
+        EventType: 'a,
+    {
+        self.my_event_responses.keys()
     }
 
     fn is_empty(&self) -> bool {
@@ -222,7 +231,7 @@ where
     EventType: Eq + Hash + Interleaves<EventArgType> + Clone,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -258,7 +267,7 @@ where
     EventType: Eq + Hash + Interleaves<EventArgType>,
     EventArgType: Clone + Send + 'static,
     EventReturnType: Send + 'static,
-    MapStore: JunkMap<
+    MapStore: GeneralMap<
         usize,
         (
             WhichEvent,
@@ -268,13 +277,15 @@ where
         ),
     >,
 {
-    /// for everything in the backlog if it is ready to go based on interleaving with everything
-    /// that was emitted earlier both that are running and also in the backlog
-    /// those get pulled out of the backlog and are started running
-    /// the return value is if anything did get out of the backlog
-    /// when the return value is false, then we should be giving the running `Consumer`s
-    /// some more time to finish because everything in the backlog was dependent on them either
-    /// directly or indirectly
+    /// For everything in the backlog, if that item `x` is ready to go based on interleaving with everything
+    ///     that was emitted earlier both that are running and also in the backlog
+    ///     that `x` gets pulled out of the backlog and starts running.
+    ///
+    /// The return value for this function is if anything did get out of the backlog.
+    ///
+    /// When the return value is false, then we should be giving the running `Consumer`s
+    ///     some more time to finish because everything in the backlog was dependent on them either
+    ///     directly or indirectly.
     fn clear_backlog(&mut self) -> bool {
         let mut ready_to_go = Vec::with_capacity(self.backlog.len() >> 2);
         for (cur_idx, cur_backlog) in self.backlog.iter().enumerate() {
@@ -315,9 +326,9 @@ where
         something_out_of_backlog
     }
 
-    /// remove the finished `JoinHandles`
-    /// send their outputs on the channel if applicable
-    /// if they panicked, do the appropriate response based on the `PanicPolicy`
+    /// Remove the finished [`JoinHandle`]s.
+    /// Send their outputs on the channel if applicable.
+    /// If they panicked, do the appropriate response based on the [`PanicPolicy`].
     fn clear_finished(&mut self) -> (bool, usize) {
         let mut to_remove = self
             .my_fired_off
@@ -362,7 +373,7 @@ where
         (something_finished, count_finished)
     }
 
-    /// if this event were to be spawned with these arguments would it be waiting
+    /// If this event were to be spawned with these arguments, would it need to be waiting?
     fn any_earlier_normal_dependences(&mut self, event: &EventType, arg: &EventArgType) -> bool {
         self.clear_finished();
         self.clear_backlog();
@@ -389,8 +400,8 @@ where
         need_to_wait_for_backlog || need_to_wait_for_spawned
     }
 
-    /// helps emit for the case when we can immediately start the Consumer running based on how
-    /// things interleave or don't
+    /// This helps emit for the case when we can immediately start the [`Consumer`] running based on how
+    /// things interleave or don't interleave
     fn unchecked_emit(
         &mut self,
         absolute_pos: WhichEvent,

@@ -38,11 +38,11 @@ pub type WhichEvent = usize;
 
 pub type EmitterError = String;
 
-/// what should we do when a panic is encountered
-/// we can propograte it up immediately
-/// store it and proceed as normally as if that task had returned normally
-/// store it and anything that depended on that task executing correctly first
-///     will also fail so treat them as having panicked too
+/// What should we do when a panic is encountered?
+/// - Propograte it up immediately
+/// - Store it and proceed as normally as if that task had returned normally
+/// - Store it and anything that depended on that task executing correctly first
+///   will also fail so treat them as having panicked too
 #[allow(dead_code)]
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum PanicPolicy {
@@ -55,11 +55,13 @@ pub trait GeneralEmitter<EventType, EventArgType, EventReturnType>
 where
     EventType: Eq + Interleaves<EventArgType>,
 {
-    /// change how we react to panics
+    /// Change how we react to panics
     fn reset_panic_policy(&mut self, panic_policy: PanicPolicy);
 
-    /// all the `EventType`'s that have a `Consumer` to run when we call emit with them
-    fn all_keys(&self) -> impl Iterator<Item = EventType> + '_;
+    /// Give all the `EventType`'s that have a `Consumer` to run when we call emit with them
+    fn all_keys<'a>(&'a self) -> impl Iterator<Item = &'a EventType> + 'a
+    where
+        EventType: 'a;
 
     /// there are no events running or waiting to be run
     fn is_empty(&self) -> bool;
@@ -88,7 +90,7 @@ where
         EventType: Clone,
     {
         let mut all_off = true;
-        let all_registered_events: Vec<EventType> = self.all_keys().collect();
+        let all_registered_events: Vec<EventType> = self.all_keys().cloned().collect();
         all_registered_events.into_iter().for_each(|event| {
             let this_turned_off = self.off(event);
             if this_turned_off.is_err() {
@@ -109,17 +111,19 @@ where
     /// in order to give the running a bit more time to finish
     fn wait_for_any(&mut self, d: Duration) -> (bool, Option<usize>);
 
-    /// either the start the associated `Consumer` running
-    /// - or put it in the backlog
-    /// - or if it is sure to panic according to `PanicPolicy`, don't store that
-    ///     it would do so
+    /// either
+    /// - start the associated [`Consumer`] running
+    /// - put it in the backlog
+    /// - if it is sure to panic according to [`PanicPolicy`], don't store that
+    ///   because it would panic as well
+    /// - do nothing if there is no associated [`Consumer`]
     ///
     /// returns
-    ///     whether there was an associated `Consumer` for this event
-    ///     will the execution of that `Consumer` get spawned later
-    ///     has the execution of that `Consumer` spawned already, without any need for waiting
+    ///     whether there was an associated [`Consumer`] for this event
+    ///     will the execution of that [`Consumer`] get spawned later
+    ///     has the execution of that [`Consumer`] spawned already, without any need for waiting
     /// last two are mutually exclusive
-    /// if there is no `Consumer`, both of the others are false but also meaningless
+    /// if there is no [`Consumer`], both of the others are false but also meaningless
     fn emit(&mut self, event: EventType, arg: EventArgType) -> (bool, bool, bool);
 }
 
