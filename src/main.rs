@@ -1,11 +1,3 @@
-mod events;
-mod general_emitter;
-mod interleaving;
-mod tokio_events;
-mod utils;
-
-mod cascading;
-
 use std::{
     cmp::max,
     sync::mpsc,
@@ -13,9 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::general_emitter::{GeneralEmitter, SyncEmitter};
-use crate::interleaving::Interleaves;
-use crate::{events::SpecificThreadEmitter, tokio_events::SpecificTokioEmitter};
+use event_emitter::assert_ok_equal;
+use event_emitter::general_emitter::{GeneralEmitter, SyncEmitter};
+use event_emitter::interleaving::Interleaves;
+use event_emitter::{events::SpecificThreadEmitter, tokio_events::SpecificTokioEmitter};
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 #[repr(transparent)]
